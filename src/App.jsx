@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search,
   FolderOpen,
@@ -27,12 +27,24 @@ import {
   Laptop,
   FolderTree,
   FileCode,
-  FileSpreadsheet
+  Smartphone,
+  UploadCloud,
+  FolderPlus
 } from 'lucide-react';
+import {
+  isDirectoryPickerSupported,
+  pickClientDirectory,
+  readDirectoryHandle,
+  processInputFiles,
+  redactLocalText
+} from './clientFileSystem.js';
 
 export default function App() {
   const [isDark, setIsDark] = useState(true);
   const [activeTab, setActiveTab] = useState('manager'); // 'manager' | 'organize' | 'storage' | 'privacy'
+
+  // Storage Source Mode: 'server' (host C:\ drive) or 'client' (this device's browser picker)
+  const [sourceMode, setSourceMode] = useState('server');
 
   // File Manager State
   const [currentPath, setCurrentPath] = useState('C:\\Users\\Aryaan\\Desktop');
@@ -45,11 +57,16 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
 
-  // Direct Path Editing in Address Bar
+  // Client-Device Handle State (for browsing current device)
+  const [clientRootHandle, setClientRootHandle] = useState(null);
+  const [clientDirStack, setClientDirStack] = useState([]); // [{ name, handle }]
+  const fileInputRef = useRef(null);
+
+  // Address Bar Direct Edit
   const [isEditingPath, setIsEditingPath] = useState(false);
   const [pathInput, setPathInput] = useState('');
 
-  // Physical Drive Info
+  // Physical Drive Info (Host)
   const [driveStats, setDriveStats] = useState({
     drive: 'C:\\',
     totalGB: 475.7,
@@ -106,7 +123,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 3500);
   };
 
   // Sync dark theme
@@ -121,7 +138,7 @@ export default function App() {
     }
   }, [isDark]);
 
-  // Fetch drive statistics
+  // Fetch host drive stats
   const fetchDriveStats = async () => {
     try {
       const res = await fetch('/api/drive/info');
@@ -130,12 +147,13 @@ export default function App() {
         setDriveStats(data);
       }
     } catch {
-      // Offline fallback
+      // Backend not available (e.g. opened on phone or remote machine)
+      setSourceMode('client');
     }
   };
 
-  // Navigate to any folder on the local drive
-  const navigateTo = async (targetPath) => {
+  // Server Drive Navigation
+  const navigateServerTo = async (targetPath) => {
     setIsLoading(true);
     try {
       const url = targetPath
@@ -153,23 +171,129 @@ export default function App() {
         setFiles(data.files || []);
         setPathInput(data.currentPath);
         setIsEditingPath(false);
+        setSourceMode('server');
       } else {
-        showToast(data.error || 'Could not open folder', 'warning');
+        showToast(data.error || 'Could not open folder on server drive', 'warning');
       }
     } catch {
-      showToast('Could not browse folder', 'warning');
+      // If backend fails, offer client device browsing
+      setSourceMode('client');
+      showToast('Server drive unreachable. Switched to local device mode.', 'info');
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Client Device: Open Folder using File System Access API
+  const handleOpenClientFolder = async () => {
+    if (isDirectoryPickerSupported()) {
+      try {
+        const rootHandle = await pickClientDirectory();
+        setClientRootHandle(rootHandle);
+        setClientDirStack([{ name: rootHandle.name, handle: rootHandle }]);
+        setSourceMode('client');
+
+        setIsLoading(true);
+        const { folders: fld, files: fls } = await readDirectoryHandle(rootHandle, rootHandle.name, showHidden);
+        setFolders(fld);
+        setFiles(fls);
+        setCurrentPath(rootHandle.name);
+        setBreadcrumbs([{ name: rootHandle.name, path: rootHandle.name }]);
+        setParentPath(null);
+        showToast(`Opened folder "${rootHandle.name}" on this device!`);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          showToast(err.message || 'Could not access device directory', 'warning');
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      // Mobile or browsers without showDirectoryPicker: Trigger HTML folder input
+      if (fileInputRef.current) {
+        fileInputRef.current.click();
+      }
+    }
+  };
+
+  // Client Device: Navigate into a subfolder
+  const navigateClientSubfolder = async (subfolder) => {
+    if (!subfolder.handle) return;
+    setIsLoading(true);
+    try {
+      const newStack = [...clientDirStack, { name: subfolder.name, handle: subfolder.handle }];
+      setClientDirStack(newStack);
+
+      const pathStr = newStack.map(s => s.name).join('/');
+      setCurrentPath(pathStr);
+      setParentPath(newStack.length > 1 ? newStack[newStack.length - 2].name : null);
+
+      setBreadcrumbs(newStack.map((s, idx) => ({
+        name: s.name,
+        path: newStack.slice(0, idx + 1).map(p => p.name).join('/')
+      })));
+
+      const { folders: fld, files: fls } = await readDirectoryHandle(subfolder.handle, pathStr, showHidden);
+      setFolders(fld);
+      setFiles(fls);
+    } catch (err) {
+      showToast('Could not open subfolder on device', 'warning');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Client Device: Navigate up to parent
+  const navigateClientUp = async () => {
+    if (clientDirStack.length <= 1) return;
+    setIsLoading(true);
+    try {
+      const newStack = clientDirStack.slice(0, clientDirStack.length - 1);
+      setClientDirStack(newStack);
+
+      const target = newStack[newStack.length - 1];
+      const pathStr = newStack.map(s => s.name).join('/');
+      setCurrentPath(pathStr);
+      setParentPath(newStack.length > 1 ? newStack[newStack.length - 2].name : null);
+
+      setBreadcrumbs(newStack.map((s, idx) => ({
+        name: s.name,
+        path: newStack.slice(0, idx + 1).map(p => p.name).join('/')
+      })));
+
+      const { folders: fld, files: fls } = await readDirectoryHandle(target.handle, pathStr, showHidden);
+      setFolders(fld);
+      setFiles(fls);
+    } catch (err) {
+      showToast('Could not navigate up', 'warning');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Mobile / File Input Handler
+  const handleMobileFileInput = (e) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const { folders: fld, files: fls } = processInputFiles(fileList);
+    setFolders(fld);
+    setFiles(fls);
+    setSourceMode('client');
+    const folderName = fld[0]?.name || 'Device Files';
+    setCurrentPath(folderName);
+    setBreadcrumbs([{ name: folderName, path: folderName }]);
+    setParentPath(null);
+    showToast(`Loaded ${fls.length} files from your device!`);
+  };
+
   // Initial load
   useEffect(() => {
     fetchDriveStats();
-    navigateTo('C:\\Users\\Aryaan\\Desktop');
+    navigateServerTo('C:\\Users\\Aryaan\\Desktop');
   }, [showHidden]);
 
-  // Filtered files & folders within current directory
+  // Filtered files & folders
   const filteredFolders = useMemo(() => {
     if (!searchQuery.trim()) return folders;
     const q = searchQuery.toLowerCase();
@@ -193,6 +317,21 @@ export default function App() {
   // Inspect file content
   const openFileDetails = async (file) => {
     setInspectFile(file);
+
+    // If file is from client handle
+    if (file.fileObj) {
+      try {
+        const text = await file.fileObj.text();
+        const { sanitized } = redactLocalText(text.slice(0, 2500));
+        setFileContent(sanitized);
+        return;
+      } catch {
+        setFileContent(file.snippet || 'Local file from device.');
+        return;
+      }
+    }
+
+    // Otherwise server file
     try {
       const res = await fetch(`/api/drive/file?path=${encodeURIComponent(file.path)}`);
       const data = await res.json();
@@ -206,7 +345,7 @@ export default function App() {
     }
   };
 
-  // Open physical file in Windows Explorer
+  // Reveal file in OS Explorer
   const revealInExplorer = async (filePath) => {
     try {
       const res = await fetch('/api/drive/open', {
@@ -219,31 +358,7 @@ export default function App() {
         showToast('Opened in Windows Explorer');
       }
     } catch {
-      showToast('Could not open file manager', 'warning');
-    }
-  };
-
-  // Switch Privacy Sample
-  const handlePrivacySwitch = (sample) => {
-    setPrivacySample(sample);
-    if (sample === 'finance') {
-      setRedactedData({
-        raw: `ACCOUNT STATEMENT - Q3 2026\nName: Aryan Achuthan\nPAN: ABCPA1234F\nAccount: 9812-4412-8801\nPhone: +91 98231 44512\nBalance: INR 452,190.50`,
-        clean: `ACCOUNT STATEMENT - Q3 2026\nName: <PERSON_1>\nPAN: <TAX_ID_REDACTED>\nAccount: <ACCOUNT_HASH_8801>\nPhone: <PHONE_HASH>\nBalance: INR 452,190.50`,
-        entitiesFound: 4
-      });
-    } else if (sample === 'academic') {
-      setRedactedData({
-        raw: `COLLEGE GRADE RECORD\nStudent: Aryan Achuthan\nRoll: 22CS014\nEmail: aryaanachuthan5@gmail.com\nPhone: +91 98231 44512\nGPA: 9.42 / 10.0`,
-        clean: `COLLEGE GRADE RECORD\nStudent: <PERSON_1>\nRoll: <STUDENT_ID_MASKED>\nEmail: <EMAIL_MASKED>\nPhone: <PHONE_HASH>\nGPA: 9.42 / 10.0`,
-        entitiesFound: 4
-      });
-    } else {
-      setRedactedData({
-        raw: `# ENVIRONMENT CONFIG\nOPENAI_KEY="sk-proj-94819a0bc4194fbe8812"\nDATABASE_URL="postgres://admin:SuperSecretPass@localhost:5432/db"\nPORT=3000`,
-        clean: `# ENVIRONMENT CONFIG\nOPENAI_KEY="<DEV_SECRET_REDACTED>"\nDATABASE_URL="postgres://<DB_CREDS_REDACTED>@localhost:5432/db"\nPORT=3000`,
-        entitiesFound: 3
-      });
+      showToast('Opened on device', 'info');
     }
   };
 
@@ -252,10 +367,21 @@ export default function App() {
       isDark ? 'bg-[#0c0d12] text-slate-100' : 'bg-[#f4f6fa] text-slate-800'
     }`}>
 
+      {/* Hidden Mobile / Standard Directory Input Fallback */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleMobileFileInput}
+        webkitdirectory="true"
+        directory="true"
+        multiple
+        className="hidden"
+      />
+
       {/* =========================================================
           TOP APP HEADER
          ========================================================= */}
-      <header className={`h-14 border-b px-5 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md ${
+      <header className={`h-14 border-b px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md ${
         isDark ? 'bg-[#12151f]/95 border-slate-800' : 'bg-white/95 border-slate-200'
       }`}>
         {/* Brand */}
@@ -266,7 +392,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="font-extrabold text-base tracking-tight">Kosha</span>
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
-              FILE MANAGER
+              {sourceMode === 'server' ? 'HOST C:\\ DRIVE' : 'THIS DEVICE'}
             </span>
           </div>
         </div>
@@ -275,64 +401,65 @@ export default function App() {
         <nav className="flex items-center gap-1 p-1 rounded-xl bg-slate-900/50 border border-slate-800">
           <button
             onClick={() => setActiveTab('manager')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'manager'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <FolderTree className="w-3.5 h-3.5" />
-            <span>File Explorer</span>
+            <span className="hidden sm:inline">Explorer</span>
           </button>
 
           <button
             onClick={() => setActiveTab('organize')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'organize'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <Wand2 className="w-3.5 h-3.5" />
-            <span>Clean Clutter</span>
-            {proposals.length > 0 && (
-              <span className="w-4 h-4 rounded-full bg-pink-500 text-white text-[9px] flex items-center justify-center font-bold">
-                {proposals.length}
-              </span>
-            )}
+            <span className="hidden sm:inline">Clean</span>
           </button>
 
           <button
             onClick={() => setActiveTab('storage')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'storage'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <HardDrive className="w-3.5 h-3.5" />
-            <span>Drive Storage</span>
+            <span className="hidden sm:inline">Storage</span>
           </button>
 
           <button
             onClick={() => setActiveTab('privacy')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'privacy'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Privacy Guard</span>
+            <span className="hidden sm:inline">Privacy</span>
           </button>
         </nav>
 
-        {/* Right Info */}
-        <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-2 text-xs text-slate-400 font-mono">
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            <span>C:\ Drive ({driveStats.freeGB} GB Free)</span>
-          </div>
+        {/* Right Info & Open Device Folder Action */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Button to open folder on THIS device */}
+          <button
+            onClick={handleOpenClientFolder}
+            className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+            title="Browse any folder on this phone or PC"
+          >
+            <FolderPlus className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden md:inline">Open Folder on This Device</span>
+            <span className="md:hidden">Open</span>
+          </button>
 
           <button
             onClick={() => setIsDark(!isDark)}
@@ -353,91 +480,92 @@ export default function App() {
         <div className="flex-1 flex overflow-hidden">
           
           {/* LEFT QUICK ACCESS SIDEBAR */}
-          <aside className={`w-56 border-r flex flex-col justify-between p-3.5 transition-colors flex-shrink-0 ${
+          <aside className={`w-52 sm:w-60 border-r flex flex-col justify-between p-3.5 transition-colors flex-shrink-0 ${
             isDark ? 'bg-[#12151f]/80 border-slate-800' : 'bg-white border-slate-200'
           }`}>
             <div className="space-y-4">
-              <div className="px-2 text-[11px] font-mono uppercase tracking-wider text-slate-500 font-bold">
-                Quick Access
-              </div>
+              
+              {/* Device Mode Switcher */}
+              <div className="space-y-1.5">
+                <div className="px-2 text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold">
+                  Device Storage Source
+                </div>
 
-              <div className="space-y-1 text-xs font-medium">
                 <button
-                  onClick={() => navigateTo('C:\\')}
+                  onClick={handleOpenClientFolder}
                   className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    currentPath.toLowerCase() === 'c:\\'
-                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                    sourceMode === 'client'
+                      ? 'bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/40 shadow-sm'
+                      : 'bg-slate-800/40 text-slate-300 hover:bg-slate-800/70'
                   }`}
                 >
-                  <HardDrive className="w-4 h-4 text-emerald-400" />
-                  <span>Local Disk (C:\)</span>
+                  <Smartphone className="w-4 h-4 text-emerald-400" />
+                  <div>
+                    <div className="font-semibold text-xs">This Device</div>
+                    <div className="text-[10px] text-slate-400">Pick any local folder</div>
+                  </div>
                 </button>
 
                 <button
-                  onClick={() => navigateTo(driveStats.userHome)}
+                  onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop')}
                   className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    currentPath.toLowerCase() === driveStats.userHome.toLowerCase()
-                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                    sourceMode === 'server'
+                      ? 'bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/40 shadow-sm'
                       : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
                   }`}
                 >
-                  <Home className="w-4 h-4 text-cyan-400" />
-                  <span>User Home</span>
-                </button>
-
-                <button
-                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Desktop')}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    currentPath.toLowerCase().includes('desktop')
-                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
-                  }`}
-                >
-                  <Laptop className="w-4 h-4 text-purple-400" />
-                  <span>Desktop</span>
-                </button>
-
-                <button
-                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Downloads')}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    currentPath.toLowerCase().includes('downloads')
-                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
-                  }`}
-                >
-                  <FolderOpen className="w-4 h-4 text-amber-400" />
-                  <span>Downloads</span>
-                </button>
-
-                <button
-                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Documents')}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    currentPath.toLowerCase().includes('documents')
-                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
-                  }`}
-                >
-                  <FileText className="w-4 h-4 text-pink-400" />
-                  <span>Documents</span>
-                </button>
-
-                <button
-                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Desktop\\DBCE Hackathon')}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    currentPath.toLowerCase().includes('dbce hackathon')
-                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
-                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
-                  }`}
-                >
-                  <FileCode className="w-4 h-4 text-emerald-400" />
-                  <span>DBCE Project</span>
+                  <HardDrive className="w-4 h-4 text-cyan-400" />
+                  <div>
+                    <div className="font-semibold text-xs">Host PC Drive</div>
+                    <div className="text-[10px] text-slate-400">C:\ Windows Drive</div>
+                  </div>
                 </button>
               </div>
+
+              {/* Host Drive Quick Locations (when in server mode) */}
+              {sourceMode === 'server' && (
+                <div className="space-y-1 text-xs font-medium pt-2 border-t border-slate-800/60">
+                  <div className="px-2 text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold mb-1">
+                    Host Shortcuts
+                  </div>
+
+                  <button
+                    onClick={() => navigateServerTo('C:\\')}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
+                  >
+                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>C:\ Root</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop')}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
+                  >
+                    <Laptop className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Desktop</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Downloads')}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Downloads</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop\\DBCE Hackathon')}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Kosha Project</span>
+                  </button>
+                </div>
+              )}
 
               {/* Toggles */}
-              <div className="pt-4 border-t border-slate-800/80">
-                <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none px-2">
+              <div className="pt-3 border-t border-slate-800/80">
+                <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none px-1">
                   <input
                     type="checkbox"
                     checked={showHidden}
@@ -447,15 +575,16 @@ export default function App() {
                   <span>Show hidden files</span>
                 </label>
               </div>
+
             </div>
 
             <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-400">
-              <span className="block text-slate-500">Connected:</span>
-              <span className="text-emerald-400 font-bold">Physical C:\ Partition</span>
+              <span className="block text-slate-500">Security Mode:</span>
+              <span className="text-emerald-400 font-bold">100% On-Device Private</span>
             </div>
           </aside>
 
-          {/* MAIN FILE MANAGER BROWSER AREA */}
+          {/* MAIN BROWSER AREA */}
           <main className="flex-1 flex flex-col overflow-hidden">
             
             {/* ADDRESS BAR & CONTROLS */}
@@ -464,10 +593,16 @@ export default function App() {
             }`}>
               {/* Back / Up Button */}
               <button
-                onClick={() => parentPath && navigateTo(parentPath)}
-                disabled={!parentPath}
+                onClick={() => {
+                  if (sourceMode === 'client') {
+                    navigateClientUp();
+                  } else if (parentPath) {
+                    navigateServerTo(parentPath);
+                  }
+                }}
+                disabled={sourceMode === 'client' ? clientDirStack.length <= 1 : !parentPath}
                 className={`p-2 rounded-xl border flex items-center justify-center transition cursor-pointer ${
-                  parentPath
+                  (sourceMode === 'client' ? clientDirStack.length > 1 : parentPath)
                     ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
                     : 'bg-slate-900/40 border-slate-800/40 text-slate-600 cursor-not-allowed'
                 }`}
@@ -476,13 +611,13 @@ export default function App() {
                 <ArrowUp className="w-4 h-4" />
               </button>
 
-              {/* Breadcrumbs or Editable Path Input */}
+              {/* Breadcrumbs or Path */}
               <div className="flex-1 relative">
-                {isEditingPath ? (
+                {isEditingPath && sourceMode === 'server' ? (
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
-                      if (pathInput.trim()) navigateTo(pathInput.trim());
+                      if (pathInput.trim()) navigateServerTo(pathInput.trim());
                     }}
                     className="flex items-center gap-2"
                   >
@@ -500,23 +635,27 @@ export default function App() {
                 ) : (
                   <div
                     onClick={() => {
-                      setPathInput(currentPath);
-                      setIsEditingPath(true);
+                      if (sourceMode === 'server') {
+                        setPathInput(currentPath);
+                        setIsEditingPath(true);
+                      }
                     }}
-                    className={`px-3 py-1.5 rounded-xl border flex items-center gap-1 overflow-x-auto text-xs font-mono cursor-text ${
-                      isDark ? 'bg-slate-900/60 border-slate-800 hover:border-slate-700' : 'bg-slate-100 border-slate-300'
-                    }`}
-                    title="Click to edit path directly"
+                    className={`px-3 py-1.5 rounded-xl border flex items-center gap-1 overflow-x-auto text-xs font-mono ${
+                      isDark ? 'bg-slate-900/60 border-slate-800' : 'bg-slate-100 border-slate-300'
+                    } ${sourceMode === 'server' ? 'cursor-text hover:border-slate-700' : 'cursor-default'}`}
                   >
                     {breadcrumbs.map((crumb, idx) => (
                       <React.Fragment key={crumb.path}>
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigateTo(crumb.path);
+                          onClick={() => {
+                            if (sourceMode === 'server') {
+                              navigateServerTo(crumb.path);
+                            }
                           }}
-                          className="hover:text-emerald-400 hover:underline font-semibold text-slate-300 whitespace-nowrap cursor-pointer"
+                          className={`font-semibold text-slate-300 whitespace-nowrap ${
+                            sourceMode === 'server' ? 'hover:text-emerald-400 hover:underline cursor-pointer' : ''
+                          }`}
                         >
                           {crumb.name}
                         </button>
@@ -529,34 +668,40 @@ export default function App() {
                 )}
               </div>
 
-              {/* Search Inside Current Folder */}
-              <div className="w-56 relative">
+              {/* In-Folder Filter */}
+              <div className="w-48 sm:w-56 relative">
                 <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter this folder..."
+                  placeholder="Filter folder..."
                   className={`w-full pl-8 pr-3 py-1.5 rounded-xl border text-xs font-mono focus:outline-none focus:border-emerald-500 ${
                     isDark ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
                   }`}
                 />
               </div>
 
-              {/* Refresh Button */}
+              {/* Refresh / Pick Button */}
               <button
-                onClick={() => navigateTo(currentPath)}
+                onClick={() => {
+                  if (sourceMode === 'client') {
+                    handleOpenClientFolder();
+                  } else {
+                    navigateServerTo(currentPath);
+                  }
+                }}
                 className="p-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
-                title="Refresh folder"
+                title={sourceMode === 'client' ? 'Pick a new folder' : 'Refresh folder'}
               >
                 <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
               </button>
             </div>
 
-            {/* FOLDER & FILE CONTENTS */}
+            {/* CONTENTS AREA */}
             <div className="flex-1 overflow-y-auto p-5 space-y-6">
               
-              {/* SUBFOLDERS SECTION */}
+              {/* SUBFOLDERS */}
               {filteredFolders.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
@@ -568,7 +713,13 @@ export default function App() {
                     {filteredFolders.map(folder => (
                       <div
                         key={folder.path}
-                        onClick={() => navigateTo(folder.path)}
+                        onClick={() => {
+                          if (sourceMode === 'client') {
+                            navigateClientSubfolder(folder);
+                          } else {
+                            navigateServerTo(folder.path);
+                          }
+                        }}
                         className={`p-3 rounded-xl border flex items-center gap-3 transition cursor-pointer group ${
                           isDark
                             ? 'bg-[#151926] border-slate-800/80 hover:border-emerald-500/50 hover:bg-slate-800/40'
@@ -588,7 +739,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* FILES SECTION */}
+              {/* FILES */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
                   <span className="font-semibold uppercase tracking-wider text-[11px]">Files ({filteredFiles.length})</span>
@@ -599,9 +750,16 @@ export default function App() {
                   isDark ? 'bg-[#151926] border-slate-800/80 divide-slate-800/60' : 'bg-white border-slate-200 divide-slate-200'
                 }`}>
                   {filteredFiles.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500 space-y-1">
-                      <FolderOpen className="w-8 h-8 mx-auto opacity-30" />
-                      <p className="text-xs font-medium">No files in this folder</p>
+                    <div className="p-10 text-center text-slate-400 space-y-3">
+                      <FolderOpen className="w-10 h-10 mx-auto opacity-30 text-emerald-400" />
+                      <p className="text-xs font-medium">No files found in this folder</p>
+                      <button
+                        onClick={handleOpenClientFolder}
+                        className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs transition cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <FolderPlus className="w-4 h-4" />
+                        <span>Select Another Folder on This Device</span>
+                      </button>
                     </div>
                   ) : (
                     filteredFiles.map(file => (
@@ -610,7 +768,6 @@ export default function App() {
                         className="p-3.5 px-4 flex items-center justify-between gap-4 hover:bg-slate-800/20 transition group"
                       >
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          {/* File Type Icon */}
                           <div className="w-8 h-8 rounded-lg bg-slate-800/80 flex items-center justify-center text-slate-300 flex-shrink-0">
                             {file.type === 'pdf' && <FileText className="w-4 h-4 text-rose-400" />}
                             {file.type === 'image' && <FileText className="w-4 h-4 text-pink-400" />}
@@ -638,8 +795,7 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* File Meta */}
-                        <div className="flex items-center gap-4 text-xs font-mono text-slate-400 flex-shrink-0">
+                        <div className="flex items-center gap-3 text-xs font-mono text-slate-400 flex-shrink-0">
                           <span className="w-16 text-right font-semibold">{file.size}</span>
                           <span className="hidden sm:inline w-28 text-right text-[11px] text-slate-500">{file.modified}</span>
 
@@ -652,13 +808,15 @@ export default function App() {
                               <Eye className="w-3.5 h-3.5 inline text-emerald-400" />
                             </button>
 
-                            <button
-                              onClick={() => revealInExplorer(file.path)}
-                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
-                              title="Reveal in Windows Explorer"
-                            >
-                              <ExternalLink className="w-3.5 h-3.5 inline" />
-                            </button>
+                            {sourceMode === 'server' && (
+                              <button
+                                onClick={() => revealInExplorer(file.path)}
+                                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                                title="Reveal in Windows Explorer"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5 inline" />
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -685,7 +843,7 @@ export default function App() {
                 <h2 className="text-base font-bold">Smart Auto-Organization</h2>
               </div>
               <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                Kosha analyzes messy files across your drive and proposes clean filenames and target folders.
+                Kosha analyzes messy files across your device and proposes clean filenames and target folders.
               </p>
             </div>
 
@@ -783,7 +941,7 @@ export default function App() {
                 <h2 className="text-base font-bold">Air-Gapped Privacy Engine</h2>
               </div>
               <p className="text-xs text-slate-400 max-w-xl">
-                Kosha analyzes files strictly on your local computer. PII is redacted locally.
+                Kosha analyzes files strictly on whatever device opens it. PII is redacted locally in browser memory.
               </p>
             </div>
 
@@ -793,7 +951,28 @@ export default function App() {
                 {['finance', 'academic', 'secrets'].map(s => (
                   <button
                     key={s}
-                    onClick={() => handlePrivacySwitch(s)}
+                    onClick={() => {
+                      setPrivacySample(s);
+                      if (s === 'finance') {
+                        setRedactedData({
+                          raw: `ACCOUNT STATEMENT - Q3 2026\nName: Aryan Achuthan\nPAN: ABCPA1234F\nAccount: 9812-4412-8801\nPhone: +91 98231 44512\nBalance: INR 452,190.50`,
+                          clean: `ACCOUNT STATEMENT - Q3 2026\nName: <PERSON_1>\nPAN: <TAX_ID_REDACTED>\nAccount: <ACCOUNT_HASH_8801>\nPhone: <PHONE_HASH>\nBalance: INR 452,190.50`,
+                          entitiesFound: 4
+                        });
+                      } else if (s === 'academic') {
+                        setRedactedData({
+                          raw: `COLLEGE GRADE RECORD\nStudent: Aryan Achuthan\nRoll: 22CS014\nEmail: aryaanachuthan5@gmail.com\nPhone: +91 98231 44512\nGPA: 9.42 / 10.0`,
+                          clean: `COLLEGE GRADE RECORD\nStudent: <PERSON_1>\nRoll: <STUDENT_ID_MASKED>\nEmail: <EMAIL_MASKED>\nPhone: <PHONE_HASH>\nGPA: 9.42 / 10.0`,
+                          entitiesFound: 4
+                        });
+                      } else {
+                        setRedactedData({
+                          raw: `# ENVIRONMENT CONFIG\nOPENAI_KEY="sk-proj-94819a0bc4194fbe8812"\nDATABASE_URL="postgres://admin:SuperSecretPass@localhost:5432/db"\nPORT=3000`,
+                          clean: `# ENVIRONMENT CONFIG\nOPENAI_KEY="<DEV_SECRET_REDACTED>"\nDATABASE_URL="postgres://<DB_CREDS_REDACTED>@localhost:5432/db"\nPORT=3000`,
+                          entitiesFound: 3
+                        });
+                      }
+                    }}
                     className={`px-3 py-1 rounded capitalize font-medium transition cursor-pointer ${
                       privacySample === s ? 'bg-emerald-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-slate-200'
                     }`}
@@ -857,15 +1036,17 @@ export default function App() {
 
               <div className="pt-2 flex items-center justify-between">
                 <span className="text-xs text-emerald-400">100% On-Device Air-Gapped</span>
-                <button
-                  onClick={() => {
-                    revealInExplorer(inspectFile.path);
-                    setInspectFile(null);
-                  }}
-                  className="px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold transition cursor-pointer"
-                >
-                  Open in Windows Explorer
-                </button>
+                {sourceMode === 'server' && (
+                  <button
+                    onClick={() => {
+                      revealInExplorer(inspectFile.path);
+                      setInspectFile(null);
+                    }}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold transition cursor-pointer"
+                  >
+                    Open in Windows Explorer
+                  </button>
+                )}
               </div>
             </div>
           </div>
