@@ -137,23 +137,24 @@ export default function App() {
 
   const loadFiles = async (folderKey, pathOverride = '') => {
     setIsScanning(true);
-    let target = '';
-    if (folderKey === 'custom' && pathOverride) {
-      target = pathOverride;
-    } else if (driveStats.defaultLocations && driveStats.defaultLocations[folderKey]) {
-      target = driveStats.defaultLocations[folderKey];
-    }
-
     try {
-      const url = target ? `/api/drive/scan?dir=${encodeURIComponent(target)}` : '/api/drive/scan';
+      let url = '';
+      if (folderKey === 'custom' && pathOverride) {
+        url = `/api/drive/scan?dir=${encodeURIComponent(pathOverride)}`;
+      } else {
+        url = `/api/drive/scan?folder=${folderKey}`;
+      }
+
       const res = await fetch(url);
       const data = await res.json();
-      if (data.success) {
-        setFiles(data.files || []);
-        showToast(`Loaded ${data.files?.length || 0} files from ${folderKey}`);
+      if (data.success && data.files) {
+        setFiles(data.files);
+        showToast(`Loaded ${data.files.length} real files from ${folderKey}`);
+      } else {
+        showToast(data.error || 'Could not scan directory', 'warning');
       }
-    } catch {
-      showToast('Backend offline. Run: npm run server', 'warning');
+    } catch (err) {
+      showToast('Could not scan drive folder', 'warning');
     } finally {
       setIsScanning(false);
     }
