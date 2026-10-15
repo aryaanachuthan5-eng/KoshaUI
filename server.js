@@ -6,7 +6,7 @@ import {
   USER_HOMEDIR,
   DEFAULT_LOCATIONS,
   getDriveInfo,
-  scanDrive,
+  browseDirectory,
   getFilePreview,
   openInExplorer,
   redactLocalText
@@ -28,22 +28,32 @@ app.get('/api/drive/info', (req, res) => {
   }
 });
 
-// 2. GET /api/drive/scan -> Real Local Drive Scanner
+// 2. GET /api/drive/browse -> Real Interactive File Manager Browser
+app.get('/api/drive/browse', (req, res) => {
+  try {
+    let target = req.query.path;
+    if (req.query.folder && DEFAULT_LOCATIONS[req.query.folder]) {
+      target = DEFAULT_LOCATIONS[req.query.folder];
+    }
+    const showHidden = req.query.showHidden === 'true';
+
+    const result = browseDirectory(target, showHidden);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Legacy scan endpoint alias to browse
 app.get('/api/drive/scan', (req, res) => {
   try {
-    let targetDir;
+    let target = req.query.dir || req.query.path;
     if (req.query.folder && DEFAULT_LOCATIONS[req.query.folder]) {
-      targetDir = DEFAULT_LOCATIONS[req.query.folder];
-    } else if (req.query.dir) {
-      targetDir = req.query.dir;
-    } else {
-      targetDir = DEFAULT_LOCATIONS.workspace;
+      target = DEFAULT_LOCATIONS[req.query.folder];
     }
+    const showHidden = req.query.showHidden === 'true';
 
-    const maxDepth = parseInt(req.query.depth) || 2;
-    const limit = parseInt(req.query.limit) || 150;
-
-    const result = scanDrive(targetDir, maxDepth, limit);
+    const result = browseDirectory(target, showHidden);
     res.json(result);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -105,16 +115,6 @@ app.post('/api/privacy/redact', (req, res) => {
     leakageBytes: "0.00 Bytes",
     latencyMs: 0.38,
     isAirGapped: true
-  });
-});
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: "ok",
-    app: "Kosha Local Intelligence Backend",
-    userHome: USER_HOMEDIR,
-    defaultLocations: DEFAULT_LOCATIONS
   });
 });
 

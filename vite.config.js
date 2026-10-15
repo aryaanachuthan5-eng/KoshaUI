@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import {
   getDriveInfo,
-  scanDrive,
+  browseDirectory,
   getFilePreview,
   openInExplorer,
   redactLocalText,
@@ -21,17 +21,20 @@ function koshaApiPlugin() {
           return res.end(JSON.stringify(getDriveInfo()));
         }
 
-        if (url.pathname === '/api/drive/scan') {
+        if (url.pathname === '/api/drive/browse' || url.pathname === '/api/drive/scan') {
           const folder = url.searchParams.get('folder');
-          const dir = url.searchParams.get('dir');
-          let target = DEFAULT_LOCATIONS.workspace;
+          const pathParam = url.searchParams.get('path') || url.searchParams.get('dir');
+          const showHidden = url.searchParams.get('showHidden') === 'true';
+
+          let target = DEFAULT_LOCATIONS.desktop;
           if (folder && DEFAULT_LOCATIONS[folder]) {
             target = DEFAULT_LOCATIONS[folder];
-          } else if (dir) {
-            target = dir;
+          } else if (pathParam) {
+            target = pathParam;
           }
+
           res.setHeader('Content-Type', 'application/json');
-          return res.end(JSON.stringify(scanDrive(target)));
+          return res.end(JSON.stringify(browseDirectory(target, showHidden)));
         }
 
         if (url.pathname === '/api/drive/file') {

@@ -9,7 +9,9 @@ export const DEFAULT_LOCATIONS = {
   workspace: process.cwd(),
   desktop: path.join(USER_HOMEDIR, 'Desktop'),
   documents: path.join(USER_HOMEDIR, 'Documents'),
-  downloads: path.join(USER_HOMEDIR, 'Downloads')
+  downloads: path.join(USER_HOMEDIR, 'Downloads'),
+  userHome: USER_HOMEDIR,
+  rootDrive: process.platform === 'win32' ? 'C:\\' : '/'
 };
 
 export const EXTENSION_MAP = {
@@ -40,24 +42,10 @@ export const EXTENSION_MAP = {
   '.py': { format: 'Python Script', type: 'script' },
   '.env': { format: 'Secret Config', type: 'secret' },
   '.sql': { format: 'SQL Script', type: 'script' },
-  '.lnk': { format: 'Windows Shortcut', type: 'script' }
+  '.lnk': { format: 'Windows Shortcut', type: 'script' },
+  '.html': { format: 'HTML Document', type: 'text' },
+  '.css': { format: 'CSS Stylesheet', type: 'text' }
 };
-
-const IGNORE_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.venv',
-  'venv',
-  'AppData',
-  '$Recycle.Bin',
-  'System Volume Information',
-  'Windows',
-  'Program Files',
-  'Program Files (x86)',
-  'dist',
-  'build',
-  '.cache'
-]);
 
 export function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -71,13 +59,11 @@ export function redactLocalText(text) {
   let sanitized = text;
   let piiCount = 0;
 
-  // Emails
   sanitized = sanitized.replace(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g, () => {
     piiCount++;
     return '<EMAIL_MASKED>';
   });
 
-  // Phone numbers
   sanitized = sanitized.replace(/(\+?\d{1,3}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3,5}[-.\s]?\d{4,5}/g, (match) => {
     if (match.length >= 7) {
       piiCount++;
@@ -86,13 +72,11 @@ export function redactLocalText(text) {
     return match;
   });
 
-  // Tax PAN / SSN / Student IDs
   sanitized = sanitized.replace(/\b[A-Z]{5}[0-9]{4}[A-Z]\b/g, () => {
     piiCount++;
     return '<TAX_ID_REDACTED>';
   });
 
-  // API keys / tokens
   sanitized = sanitized.replace(/(sk-[a-zA-Z0-9_-]{12,}|ghp_[a-zA-Z0-9]{12,}|postgres:\/\/[^"'\s]+)/g, () => {
     piiCount++;
     return '<DEV_SECRET_REDACTED>';
@@ -121,122 +105,139 @@ export function getDriveInfo() {
   };
 }
 
-export function scanDrive(targetDir, maxDepth = 2, limit = 150) {
-  const startTime = Date.now();
-  const resolvedDir = path.resolve(targetDir);
+// Full File Manager Directory Browser
+export function browseDirectory(targetPath, showHidden = false) {
+  let resolved = targetPath ? path.resolve(targetPath) : USER_HOMEDIR;
 
-  if (!fs.existsSync(resolvedDir)) {
-    return { success: false, error: `Directory not found: ${resolvedDir}` };
+  if (!fs.existsSync(resolved)) {
+    resolved = USER_HOMEDIR;
   }
 
-  const results = [];
-  const clutterCandidates = [];
+  const parsed = path.parse(resolved);
+  const isRoot = resolved.toLowerCase() === parsed.root.toLowerCase();
+  const parentPath = isRoot ? null : path.dirname(resolved);
 
-  function walk(currentDir, currentDepth) {
-    if (results.length >= limit || currentDepth > maxDepth) return;
+  // Breadcrumbs generator
+  const parts = resolved.split(path.sep).filter(Boolean);
+  const breadcrumbs = [];
+  let accum = parsed.root;
+  breadcrumbs.push({ name: parsed.root, path: parsed.root });
 
-    try {
-      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part.toLowerCase() === parsed.root.replace(path.sep, '').toLowerCase()) continue;
+    accum = path.join(accum, part);
+    breadcrumbs.push({ name: part, path: accum });
+  }
 
-      for (const entry of entries) {
-        if (results.length >= limit) break;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(resolved, { withFileTypes: true });
+  } catch (err) {
+    return {
+      success: false,
+      error: `Could not read folder: ${err.message}`,
+      currentPath: resolved,
+      parentPath,
+      isRoot,
+      breadcrumbs,
+      folders: [],
+      files: []
+    };
+  }
 
-        const fullPath = path.join(currentDir, entry.name);
-        const isDotfile = entry.name.startsWith('.');
+  const folders = [];
+  const files = [];
 
-        if (entry.isDirectory()) {
-          if (!IGNORE_DIRS.has(entry.name) && !entry.name.startsWith('.git')) {
-            walk(fullPath, currentDepth + 1);
-          }
-        } else if (entry.isFile()) {
-          try {
-            const stat = fs.statSync(fullPath);
-            const ext = path.extname(entry.name).toLowerCase();
-            const formatMeta = EXTENSION_MAP[ext] || { format: ext ? `${ext.toUpperCase()} File` : 'File', type: 'text' };
+  for (const entry of entries) {
+    const isDotfile = entry.name.startsWith('.');
+    if (isDotfile && !showHidden) continue;
 
-            let snippet = '';
-            let piiStatus = 'Air-Gapped';
+    const fullPath = path.join(resolved, entry.name);
 
-            const isTextual = ['.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.env', '.py', '.csv', '.html', '.css', '.sql'].includes(ext) || isDotfile;
-            if (isTextual && stat.size < 500000) {
-              try {
-                const sampleContent = fs.readFileSync(fullPath, { encoding: 'utf-8', flag: 'r' }).slice(0, 450);
-                const { sanitized, piiCount } = redactLocalText(sampleContent);
-                snippet = sanitized.replace(/\s+/g, ' ').trim();
-                if (piiCount > 0) {
-                  piiStatus = `${piiCount} PII Masked`;
-                }
-              } catch {
-                snippet = `Local ${formatMeta.format} file on disk.`;
-              }
-            } else if (formatMeta.type === 'image') {
-              snippet = `Image asset (${formatBytes(stat.size)}). Ready for local OCR analysis.`;
-            } else if (formatMeta.type === 'video') {
-              snippet = `Media stream (${formatBytes(stat.size)}). Ready for local frame analysis.`;
-            } else if (ext === '.docx' || ext === '.doc') {
-              snippet = `Microsoft Word document (${formatBytes(stat.size)}).`;
-            } else if (ext === '.xlsx' || ext === '.xls') {
-              snippet = `Microsoft Excel spreadsheet (${formatBytes(stat.size)}).`;
-            } else {
-              snippet = `${formatMeta.format} located on local drive.`;
-            }
-
-            const lowerName = entry.name.toLowerCase();
-            if (
-              lowerName.startsWith('screenshot') ||
-              lowerName.startsWith('img_') ||
-              lowerName.startsWith('temp_') ||
-              lowerName.startsWith('untitled') ||
-              lowerName.includes('copy')
-            ) {
-              clutterCandidates.push({
-                oldPath: fullPath,
-                oldName: entry.name,
-                dir: currentDir,
-                size: formatBytes(stat.size),
-                sizeBytes: stat.size,
-                ext: ext,
-                type: formatMeta.type
-              });
-            }
-
-            results.push({
-              id: `${stat.ino || Date.now()}-${results.length}`,
-              name: entry.name,
-              format: formatMeta.format,
-              path: fullPath,
-              dir: currentDir,
-              mount: path.parse(fullPath).root || 'C:\\',
-              size: formatBytes(stat.size),
-              sizeBytes: stat.size,
-              modified: stat.mtime.toLocaleDateString() + ' ' + stat.mtime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              privacy: piiStatus,
-              privacyStatus: piiStatus.includes('PII') ? 'masked' : 'verified',
-              category: isDotfile ? 'secrets' : formatMeta.type,
-              isDotfile,
-              type: formatMeta.type,
-              snippet
-            });
-          } catch {
-            // Permission or locked file error
-          }
-        }
+    if (entry.isDirectory()) {
+      try {
+        const stat = fs.statSync(fullPath);
+        folders.push({
+          name: entry.name,
+          path: fullPath,
+          isDirectory: true,
+          isDotfile,
+          modified: stat.mtime.toLocaleDateString() + ' ' + stat.mtime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+      } catch {
+        folders.push({
+          name: entry.name,
+          path: fullPath,
+          isDirectory: true,
+          isDotfile,
+          modified: '--'
+        });
       }
-    } catch {
-      // Permission error on directory
+    } else if (entry.isFile()) {
+      try {
+        const stat = fs.statSync(fullPath);
+        const ext = path.extname(entry.name).toLowerCase();
+        const formatMeta = EXTENSION_MAP[ext] || { format: ext ? `${ext.toUpperCase()} File` : 'File', type: 'text' };
+
+        let snippet = '';
+        let piiStatus = 'Air-Gapped';
+
+        const isTextual = ['.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.env', '.py', '.csv', '.html', '.css', '.sql'].includes(ext) || isDotfile;
+        if (isTextual && stat.size < 300000) {
+          try {
+            const sampleContent = fs.readFileSync(fullPath, { encoding: 'utf-8', flag: 'r' }).slice(0, 300);
+            const { sanitized, piiCount } = redactLocalText(sampleContent);
+            snippet = sanitized.replace(/\s+/g, ' ').trim();
+            if (piiCount > 0) piiStatus = `${piiCount} PII Masked`;
+          } catch {
+            snippet = `Local ${formatMeta.format} file.`;
+          }
+        } else if (formatMeta.type === 'image') {
+          snippet = `Image (${formatBytes(stat.size)}). Local OCR ready.`;
+        } else if (formatMeta.type === 'video') {
+          snippet = `Video (${formatBytes(stat.size)}). Local frame analyzer ready.`;
+        } else if (ext === '.docx' || ext === '.doc') {
+          snippet = `Word document (${formatBytes(stat.size)}).`;
+        } else if (ext === '.xlsx' || ext === '.xls') {
+          snippet = `Excel spreadsheet (${formatBytes(stat.size)}).`;
+        } else {
+          snippet = `${formatMeta.format} on disk.`;
+        }
+
+        files.push({
+          name: entry.name,
+          path: fullPath,
+          isDirectory: false,
+          isDotfile,
+          format: formatMeta.format,
+          type: formatMeta.type,
+          size: formatBytes(stat.size),
+          sizeBytes: stat.size,
+          modified: stat.mtime.toLocaleDateString() + ' ' + stat.mtime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          privacy: piiStatus,
+          snippet
+        });
+      } catch {
+        // Skip inaccessible files
+      }
     }
   }
 
-  walk(resolvedDir, 0);
+  folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  files.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
   return {
     success: true,
-    scannedDirectory: resolvedDir,
-    count: results.length,
-    clutterCount: clutterCandidates.length,
-    clutterCandidates,
-    latencyMs: Date.now() - startTime,
-    files: results
+    currentPath: resolved,
+    parentPath,
+    isRoot,
+    breadcrumbs,
+    folders,
+    files,
+    totalItems: folders.length + files.length,
+    userHome: USER_HOMEDIR,
+    defaultLocations: DEFAULT_LOCATIONS
   };
 }
 
@@ -257,7 +258,7 @@ export function getFilePreview(filePath) {
       content = `[File encoding could not be read as UTF-8]`;
     }
   } else {
-    content = `[File size: ${formatBytes(stat.size)}. Binary or large stream preview limited for performance.]`;
+    content = `[File size: ${formatBytes(stat.size)}. Binary preview limited for performance.]`;
   }
 
   const { sanitized, piiCount } = redactLocalText(content);

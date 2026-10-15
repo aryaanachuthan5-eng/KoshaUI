@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search,
   FolderOpen,
-  Sparkles,
+  Folder,
   HardDrive,
   ShieldCheck,
   Wand2,
@@ -16,32 +16,40 @@ import {
   Key,
   Terminal,
   ArrowRight,
+  ArrowUp,
   Trash2,
   RefreshCw,
   Eye,
   X,
-  FileCode,
   Lock,
-  ChevronRight
+  ChevronRight,
+  Home,
+  Laptop,
+  FolderTree,
+  FileCode,
+  FileSpreadsheet
 } from 'lucide-react';
 
 export default function App() {
-  // Theme state
   const [isDark, setIsDark] = useState(true);
+  const [activeTab, setActiveTab] = useState('manager'); // 'manager' | 'organize' | 'storage' | 'privacy'
 
-  // Active view: 'search' | 'organize' | 'storage' | 'privacy'
-  const [activeTab, setActiveTab] = useState('search');
-
-  // Search state
+  // File Manager State
+  const [currentPath, setCurrentPath] = useState('C:\\Users\\Aryaan\\Desktop');
+  const [parentPath, setParentPath] = useState(null);
+  const [breadcrumbs, setBreadcrumbs] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
-  const [showHidden, setShowHidden] = useState(false);
 
-  // Drive & scanning state
-  const [currentFolder, setCurrentFolder] = useState('workspace');
-  const [customPath, setCustomPath] = useState('');
-  const [isScanning, setIsScanning] = useState(false);
-  const [files, setFiles] = useState([]);
+  // Direct Path Editing in Address Bar
+  const [isEditingPath, setIsEditingPath] = useState(false);
+  const [pathInput, setPathInput] = useState('');
+
+  // Physical Drive Info
   const [driveStats, setDriveStats] = useState({
     drive: 'C:\\',
     totalGB: 475.7,
@@ -51,7 +59,7 @@ export default function App() {
     userHome: 'C:\\Users\\Aryaan'
   });
 
-  // Clutter / Organize proposals
+  // Clutter / Organize Proposals
   const [proposals, setProposals] = useState([
     {
       id: 1,
@@ -79,15 +87,6 @@ export default function App() {
       folder: "Videos/Captures ➔ Videos/Projects",
       reason: "Extracted audio transcript 'Kosha project pitch'",
       size: "340 MB"
-    },
-    {
-      id: 4,
-      selected: true,
-      oldName: "untitled_notes_final.txt",
-      newName: "Distributed_Systems_Study_Notes.txt",
-      folder: "Desktop ➔ Documents/Study",
-      reason: "Extracted distributed consensus concepts",
-      size: "38 KB"
     }
   ]);
 
@@ -99,7 +98,7 @@ export default function App() {
     entitiesFound: 4
   });
 
-  // Quick File Preview Modal
+  // File Preview Modal
   const [inspectFile, setInspectFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
 
@@ -110,7 +109,7 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  // Sync theme to root HTML
+  // Sync dark theme
   useEffect(() => {
     const root = document.documentElement;
     if (isDark) {
@@ -122,8 +121,8 @@ export default function App() {
     }
   }, [isDark]);
 
-  // Load real drive info and initial files
-  const loadDriveInfo = async () => {
+  // Fetch drive statistics
+  const fetchDriveStats = async () => {
     try {
       const res = await fetch('/api/drive/info');
       const data = await res.json();
@@ -135,52 +134,61 @@ export default function App() {
     }
   };
 
-  const loadFiles = async (folderKey, pathOverride = '') => {
-    setIsScanning(true);
+  // Navigate to any folder on the local drive
+  const navigateTo = async (targetPath) => {
+    setIsLoading(true);
     try {
-      let url = '';
-      if (folderKey === 'custom' && pathOverride) {
-        url = `/api/drive/scan?dir=${encodeURIComponent(pathOverride)}`;
-      } else {
-        url = `/api/drive/scan?folder=${folderKey}`;
-      }
+      const url = targetPath
+        ? `/api/drive/browse?path=${encodeURIComponent(targetPath)}&showHidden=${showHidden}`
+        : `/api/drive/browse?showHidden=${showHidden}`;
 
       const res = await fetch(url);
       const data = await res.json();
-      if (data.success && data.files) {
-        setFiles(data.files);
-        showToast(`Loaded ${data.files.length} real files from ${folderKey}`);
+
+      if (data.success) {
+        setCurrentPath(data.currentPath);
+        setParentPath(data.parentPath);
+        setBreadcrumbs(data.breadcrumbs || []);
+        setFolders(data.folders || []);
+        setFiles(data.files || []);
+        setPathInput(data.currentPath);
+        setIsEditingPath(false);
       } else {
-        showToast(data.error || 'Could not scan directory', 'warning');
+        showToast(data.error || 'Could not open folder', 'warning');
       }
-    } catch (err) {
-      showToast('Could not scan drive folder', 'warning');
+    } catch {
+      showToast('Could not browse folder', 'warning');
     } finally {
-      setIsScanning(false);
+      setIsLoading(false);
     }
   };
 
+  // Initial load
   useEffect(() => {
-    loadDriveInfo();
-    loadFiles('workspace');
-  }, []);
+    fetchDriveStats();
+    navigateTo('C:\\Users\\Aryaan\\Desktop');
+  }, [showHidden]);
 
-  // Filtered files
+  // Filtered files & folders within current directory
+  const filteredFolders = useMemo(() => {
+    if (!searchQuery.trim()) return folders;
+    const q = searchQuery.toLowerCase();
+    return folders.filter(f => f.name.toLowerCase().includes(q));
+  }, [folders, searchQuery]);
+
   const filteredFiles = useMemo(() => {
     return files.filter(f => {
-      if (f.isDotfile && !showHidden) return false;
       if (activeCategory !== 'all' && f.type !== activeCategory) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         return (
           f.name.toLowerCase().includes(q) ||
-          (f.snippet && f.snippet.toLowerCase().includes(q)) ||
-          f.path.toLowerCase().includes(q)
+          (f.snippet && f.snippet.toLowerCase().includes(q))
         );
       }
       return true;
     });
-  }, [files, searchQuery, activeCategory, showHidden]);
+  }, [files, searchQuery, activeCategory]);
 
   // Inspect file content
   const openFileDetails = async (file) => {
@@ -208,7 +216,7 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
-        showToast('Opened in Windows File Explorer');
+        showToast('Opened in Windows Explorer');
       }
     } catch {
       showToast('Could not open file manager', 'warning');
@@ -239,73 +247,54 @@ export default function App() {
     }
   };
 
-  // Apply Clutter Cleaning
-  const applyProposals = () => {
-    setProposals([]);
-    showToast('Organized files successfully!');
-  };
-
-  // Reclaim Cache
-  const cleanCache = () => {
-    setDriveStats(prev => ({
-      ...prev,
-      freeGB: parseFloat((prev.freeGB + 8.2).toFixed(1)),
-      usedGB: parseFloat((prev.usedGB - 8.2).toFixed(1))
-    }));
-    showToast('Cleaned 8.2 GB of temporary caches!');
-  };
-
   return (
     <div className={`min-h-screen flex flex-col font-sans transition-colors duration-200 ${
-      isDark ? 'bg-[#0e1017] text-slate-100' : 'bg-[#f8fafc] text-slate-800'
+      isDark ? 'bg-[#0c0d12] text-slate-100' : 'bg-[#f4f6fa] text-slate-800'
     }`}>
 
       {/* =========================================================
-          TOP NAVIGATION BAR (Clean, simple, human)
+          TOP APP HEADER
          ========================================================= */}
-      <header className={`h-16 border-b px-6 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md ${
-        isDark ? 'bg-[#141722]/90 border-slate-800/80' : 'bg-white/90 border-slate-200'
+      <header className={`h-14 border-b px-5 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md ${
+        isDark ? 'bg-[#12151f]/95 border-slate-800' : 'bg-white/95 border-slate-200'
       }`}>
         {/* Brand */}
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-lg shadow-sm">
+          <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-base shadow-sm">
             K
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-extrabold text-base tracking-tight">Kosha</span>
-              <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Local & Private
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400">AI File Intelligence for your PC</p>
+          <div className="flex items-center gap-2">
+            <span className="font-extrabold text-base tracking-tight">Kosha</span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
+              FILE MANAGER
+            </span>
           </div>
         </div>
 
-        {/* Clean Center Navigation Tabs */}
-        <nav className="flex items-center gap-1 p-1 rounded-xl bg-slate-900/40 border border-slate-800">
+        {/* Navigation Tabs */}
+        <nav className="flex items-center gap-1 p-1 rounded-xl bg-slate-900/50 border border-slate-800">
           <button
-            onClick={() => setActiveTab('search')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
-              activeTab === 'search'
-                ? 'bg-emerald-500 text-slate-950 shadow-sm'
+            onClick={() => setActiveTab('manager')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+              activeTab === 'manager'
+                ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <Search className="w-3.5 h-3.5" />
-            <span>Search Files</span>
+            <FolderTree className="w-3.5 h-3.5" />
+            <span>File Explorer</span>
           </button>
 
           <button
             onClick={() => setActiveTab('organize')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
               activeTab === 'organize'
-                ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <Wand2 className="w-3.5 h-3.5" />
-            <span>Clean & Organize</span>
+            <span>Clean Clutter</span>
             {proposals.length > 0 && (
               <span className="w-4 h-4 rounded-full bg-pink-500 text-white text-[9px] flex items-center justify-center font-bold">
                 {proposals.length}
@@ -315,34 +304,34 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('storage')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
               activeTab === 'storage'
-                ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <HardDrive className="w-3.5 h-3.5" />
-            <span>Disk Storage</span>
+            <span>Drive Storage</span>
           </button>
 
           <button
             onClick={() => setActiveTab('privacy')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-2 ${
               activeTab === 'privacy'
-                ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Privacy Shield</span>
+            <span>Privacy Guard</span>
           </button>
         </nav>
 
-        {/* Right Actions */}
+        {/* Right Info */}
         <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400 font-mono">
+          <div className="hidden md:flex items-center gap-2 text-xs text-slate-400 font-mono">
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            <span>{driveStats.drive} ({driveStats.freeGB} GB free)</span>
+            <span>C:\ Drive ({driveStats.freeGB} GB Free)</span>
           </div>
 
           <button
@@ -350,7 +339,7 @@ export default function App() {
             className={`w-8 h-8 rounded-lg flex items-center justify-center transition border cursor-pointer ${
               isDark ? 'bg-slate-800 border-slate-700 text-amber-400 hover:bg-slate-700' : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
             }`}
-            title="Toggle Theme"
+            title="Toggle theme"
           >
             {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
@@ -358,443 +347,483 @@ export default function App() {
       </header>
 
       {/* =========================================================
-          MAIN CONTENT AREA
+          MAIN WORKSPACE (FILE MANAGER LAYOUT)
          ========================================================= */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-6 space-y-6">
-
-        {/* TAB 1: SEARCH & EXPLORE FILES */}
-        {activeTab === 'search' && (
-          <div className="space-y-6">
-            
-            {/* Folder Picker & Global Search Header */}
-            <div className={`p-6 rounded-2xl border space-y-4 shadow-sm ${
-              isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'
-            }`}>
-              
-              {/* Folder Selector Pills */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/50">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                  <FolderOpen className="w-4 h-4 text-emerald-400" />
-                  <span>Choose Folder to Search:</span>
-                </div>
-
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {[
-                    { id: 'workspace', label: 'Workspace' },
-                    { id: 'desktop', label: 'Desktop' },
-                    { id: 'downloads', label: 'Downloads' },
-                    { id: 'documents', label: 'Documents' }
-                  ].map(f => (
-                    <button
-                      key={f.id}
-                      onClick={() => {
-                        setCurrentFolder(f.id);
-                        loadFiles(f.id);
-                      }}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                        currentFolder === f.id
-                          ? 'bg-emerald-500 text-slate-950 font-bold shadow-sm'
-                          : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-
-                  <button
-                    onClick={() => loadFiles(currentFolder, customPath)}
-                    className="ml-2 text-xs text-slate-400 hover:text-emerald-400 flex items-center gap-1 cursor-pointer font-medium"
-                    title="Refresh folder"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
-                    <span>Rescan</span>
-                  </button>
-                </div>
+      {activeTab === 'manager' && (
+        <div className="flex-1 flex overflow-hidden">
+          
+          {/* LEFT QUICK ACCESS SIDEBAR */}
+          <aside className={`w-56 border-r flex flex-col justify-between p-3.5 transition-colors flex-shrink-0 ${
+            isDark ? 'bg-[#12151f]/80 border-slate-800' : 'bg-white border-slate-200'
+          }`}>
+            <div className="space-y-4">
+              <div className="px-2 text-[11px] font-mono uppercase tracking-wider text-slate-500 font-bold">
+                Quick Access
               </div>
 
-              {/* Big, Clean Search Bar */}
-              <div className="relative">
-                <Search className="w-5 h-5 absolute left-4 top-3.5 text-slate-400 pointer-events-none" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search naturally: e.g. 'notes from last week', 'invoices', 'diagrams', 'react code'..."
-                  className={`w-full pl-12 pr-4 py-3 rounded-xl border text-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-500/40 ${
-                    isDark
-                      ? 'bg-slate-900/80 border-slate-700 text-slate-100 placeholder:text-slate-500 focus:border-emerald-500'
-                      : 'bg-slate-50 border-slate-300 text-slate-800 placeholder:text-slate-400 focus:border-emerald-500'
+              <div className="space-y-1 text-xs font-medium">
+                <button
+                  onClick={() => navigateTo('C:\\')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase() === 'c:\\'
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
                   }`}
-                />
+                >
+                  <HardDrive className="w-4 h-4 text-emerald-400" />
+                  <span>Local Disk (C:\)</span>
+                </button>
+
+                <button
+                  onClick={() => navigateTo(driveStats.userHome)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase() === driveStats.userHome.toLowerCase()
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <Home className="w-4 h-4 text-cyan-400" />
+                  <span>User Home</span>
+                </button>
+
+                <button
+                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Desktop')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('desktop')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <Laptop className="w-4 h-4 text-purple-400" />
+                  <span>Desktop</span>
+                </button>
+
+                <button
+                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Downloads')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('downloads')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <FolderOpen className="w-4 h-4 text-amber-400" />
+                  <span>Downloads</span>
+                </button>
+
+                <button
+                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Documents')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('documents')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-pink-400" />
+                  <span>Documents</span>
+                </button>
+
+                <button
+                  onClick={() => navigateTo('C:\\Users\\Aryaan\\Desktop\\DBCE Hackathon')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('dbce hackathon')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <FileCode className="w-4 h-4 text-emerald-400" />
+                  <span>DBCE Project</span>
+                </button>
               </div>
 
-              {/* Category Filter Pills & Hidden Dotfile Toggle */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-                <div className="flex items-center gap-1.5 overflow-x-auto text-xs font-medium">
-                  {[
-                    { id: 'all', label: 'All Files' },
-                    { id: 'text', label: 'Documents & Notes' },
-                    { id: 'script', label: 'Code & Scripts' },
-                    { id: 'image', label: 'Images' },
-                    { id: 'video', label: 'Videos' }
-                  ].map(cat => (
-                    <button
-                      key={cat.id}
-                      onClick={() => setActiveCategory(cat.id)}
-                      className={`px-3 py-1 rounded-lg transition cursor-pointer ${
-                        activeCategory === cat.id
-                          ? 'bg-slate-700 text-white font-bold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {cat.label}
-                    </button>
-                  ))}
-                </div>
-
-                <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+              {/* Toggles */}
+              <div className="pt-4 border-t border-slate-800/80">
+                <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none px-2">
                   <input
                     type="checkbox"
                     checked={showHidden}
                     onChange={(e) => setShowHidden(e.target.checked)}
                     className="w-3.5 h-3.5 rounded text-emerald-500 accent-emerald-500 cursor-pointer"
                   />
-                  <span>Show hidden files (.env, .git)</span>
+                  <span>Show hidden files</span>
                 </label>
               </div>
-
             </div>
 
-            {/* Results Count Strip */}
-            <div className="flex items-center justify-between px-2 text-xs text-slate-400">
-              <span>Showing {filteredFiles.length} files in {currentFolder}</span>
-              <span className="font-mono text-[11px] text-emerald-400">100% on-device search</span>
+            <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-400">
+              <span className="block text-slate-500">Connected:</span>
+              <span className="text-emerald-400 font-bold">Physical C:\ Partition</span>
             </div>
+          </aside>
 
-            {/* Files List */}
-            <div className={`rounded-2xl border divide-y overflow-hidden shadow-sm ${
-              isDark ? 'bg-[#161922] border-slate-800/80 divide-slate-800/60' : 'bg-white border-slate-200 divide-slate-200'
+          {/* MAIN FILE MANAGER BROWSER AREA */}
+          <main className="flex-1 flex flex-col overflow-hidden">
+            
+            {/* ADDRESS BAR & CONTROLS */}
+            <div className={`p-3.5 border-b flex items-center justify-between gap-3 ${
+              isDark ? 'bg-[#151926]/90 border-slate-800' : 'bg-white border-slate-200'
             }`}>
-              {filteredFiles.length === 0 ? (
-                <div className="p-12 text-center text-slate-500 space-y-2">
-                  <FolderOpen className="w-10 h-10 mx-auto opacity-30" />
-                  <p className="text-sm font-medium">No files found matching your search</p>
-                  <p className="text-xs text-slate-400">Try searching for generic terms or switch the folder above</p>
-                </div>
-              ) : (
-                filteredFiles.map((file) => (
+              {/* Back / Up Button */}
+              <button
+                onClick={() => parentPath && navigateTo(parentPath)}
+                disabled={!parentPath}
+                className={`p-2 rounded-xl border flex items-center justify-center transition cursor-pointer ${
+                  parentPath
+                    ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
+                    : 'bg-slate-900/40 border-slate-800/40 text-slate-600 cursor-not-allowed'
+                }`}
+                title="Go up to parent directory"
+              >
+                <ArrowUp className="w-4 h-4" />
+              </button>
+
+              {/* Breadcrumbs or Editable Path Input */}
+              <div className="flex-1 relative">
+                {isEditingPath ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (pathInput.trim()) navigateTo(pathInput.trim());
+                    }}
+                    className="flex items-center gap-2"
+                  >
+                    <input
+                      type="text"
+                      value={pathInput}
+                      onChange={(e) => setPathInput(e.target.value)}
+                      onBlur={() => setIsEditingPath(false)}
+                      autoFocus
+                      className={`w-full px-3 py-1.5 rounded-xl border text-xs font-mono focus:outline-none focus:border-emerald-500 ${
+                        isDark ? 'bg-slate-950 border-emerald-500 text-slate-100' : 'bg-white border-emerald-500 text-slate-800'
+                      }`}
+                    />
+                  </form>
+                ) : (
                   <div
-                    key={file.id}
-                    className="p-4 flex items-center justify-between gap-4 hover:bg-slate-800/20 transition"
+                    onClick={() => {
+                      setPathInput(currentPath);
+                      setIsEditingPath(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-xl border flex items-center gap-1 overflow-x-auto text-xs font-mono cursor-text ${
+                      isDark ? 'bg-slate-900/60 border-slate-800 hover:border-slate-700' : 'bg-slate-100 border-slate-300'
+                    }`}
+                    title="Click to edit path directly"
                   >
-                    {/* Icon + Name + Snippet */}
-                    <div className="flex items-start gap-3.5 flex-1 min-w-0">
-                      <div className="w-9 h-9 rounded-xl bg-slate-800/80 flex items-center justify-center text-slate-300 flex-shrink-0 mt-0.5">
-                        {file.type === 'pdf' && <FileText className="w-4 h-4 text-rose-400" />}
-                        {file.type === 'image' && <FileText className="w-4 h-4 text-pink-400" />}
-                        {file.type === 'video' && <Video className="w-4 h-4 text-purple-400" />}
-                        {file.type === 'script' && <Terminal className="w-4 h-4 text-cyan-400" />}
-                        {file.type === 'secret' && <Key className="w-4 h-4 text-amber-400" />}
-                        {!file.type && <FileText className="w-4 h-4 text-emerald-400" />}
-                      </div>
+                    {breadcrumbs.map((crumb, idx) => (
+                      <React.Fragment key={crumb.path}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigateTo(crumb.path);
+                          }}
+                          className="hover:text-emerald-400 hover:underline font-semibold text-slate-300 whitespace-nowrap cursor-pointer"
+                        >
+                          {crumb.name}
+                        </button>
+                        {idx < breadcrumbs.length - 1 && (
+                          <ChevronRight className="w-3 h-3 text-slate-600 flex-shrink-0" />
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                )}
+              </div>
 
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-sm truncate" title={file.name}>
-                            {file.name}
-                          </span>
-                          {file.isDotfile && (
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-400 font-mono">
-                              Hidden
-                            </span>
-                          )}
-                          {file.privacy && file.privacy.includes('PII') && (
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-pink-500/15 text-pink-400 font-medium">
-                              {file.privacy}
-                            </span>
-                          )}
+              {/* Search Inside Current Folder */}
+              <div className="w-56 relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Filter this folder..."
+                  className={`w-full pl-8 pr-3 py-1.5 rounded-xl border text-xs font-mono focus:outline-none focus:border-emerald-500 ${
+                    isDark ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
+                  }`}
+                />
+              </div>
+
+              {/* Refresh Button */}
+              <button
+                onClick={() => navigateTo(currentPath)}
+                className="p-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
+                title="Refresh folder"
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
+              </button>
+            </div>
+
+            {/* FOLDER & FILE CONTENTS */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+              
+              {/* SUBFOLDERS SECTION */}
+              {filteredFolders.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
+                    <span className="font-semibold uppercase tracking-wider text-[11px]">Folders ({filteredFolders.length})</span>
+                    <span>Click folder to open</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
+                    {filteredFolders.map(folder => (
+                      <div
+                        key={folder.path}
+                        onClick={() => navigateTo(folder.path)}
+                        className={`p-3 rounded-xl border flex items-center gap-3 transition cursor-pointer group ${
+                          isDark
+                            ? 'bg-[#151926] border-slate-800/80 hover:border-emerald-500/50 hover:bg-slate-800/40'
+                            : 'bg-white border-slate-200 hover:border-emerald-500/50 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Folder className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform flex-shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-xs truncate text-slate-200 group-hover:text-emerald-400">
+                            {folder.name}
+                          </div>
+                          <div className="text-[10px] text-slate-500 font-mono">Folder</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* FILES SECTION */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
+                  <span className="font-semibold uppercase tracking-wider text-[11px]">Files ({filteredFiles.length})</span>
+                  <span>{currentPath}</span>
+                </div>
+
+                <div className={`rounded-2xl border divide-y overflow-hidden shadow-sm ${
+                  isDark ? 'bg-[#151926] border-slate-800/80 divide-slate-800/60' : 'bg-white border-slate-200 divide-slate-200'
+                }`}>
+                  {filteredFiles.length === 0 ? (
+                    <div className="p-8 text-center text-slate-500 space-y-1">
+                      <FolderOpen className="w-8 h-8 mx-auto opacity-30" />
+                      <p className="text-xs font-medium">No files in this folder</p>
+                    </div>
+                  ) : (
+                    filteredFiles.map(file => (
+                      <div
+                        key={file.path}
+                        className="p-3.5 px-4 flex items-center justify-between gap-4 hover:bg-slate-800/20 transition group"
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          {/* File Type Icon */}
+                          <div className="w-8 h-8 rounded-lg bg-slate-800/80 flex items-center justify-center text-slate-300 flex-shrink-0">
+                            {file.type === 'pdf' && <FileText className="w-4 h-4 text-rose-400" />}
+                            {file.type === 'image' && <FileText className="w-4 h-4 text-pink-400" />}
+                            {file.type === 'video' && <Video className="w-4 h-4 text-purple-400" />}
+                            {file.type === 'script' && <Terminal className="w-4 h-4 text-cyan-400" />}
+                            {file.type === 'secret' && <Key className="w-4 h-4 text-amber-400" />}
+                            {!file.type && <FileText className="w-4 h-4 text-emerald-400" />}
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-xs truncate text-slate-100" title={file.name}>
+                                {file.name}
+                              </span>
+                              {file.privacy && file.privacy.includes('PII') && (
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-pink-500/15 text-pink-400 font-mono">
+                                  {file.privacy}
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="text-[11px] text-slate-400 line-clamp-1">
+                              {file.snippet || file.format}
+                            </p>
+                          </div>
                         </div>
 
-                        {/* Extracted Meaning Snippet */}
-                        <p className="text-xs text-slate-400 line-clamp-1 mt-0.5">
-                          {file.snippet || file.format}
-                        </p>
+                        {/* File Meta */}
+                        <div className="flex items-center gap-4 text-xs font-mono text-slate-400 flex-shrink-0">
+                          <span className="w-16 text-right font-semibold">{file.size}</span>
+                          <span className="hidden sm:inline w-28 text-right text-[11px] text-slate-500">{file.modified}</span>
 
-                        <div className="flex items-center gap-3 text-[11px] text-slate-500 font-mono mt-1">
-                          <span>{file.size}</span>
-                          <span>•</span>
-                          <span>{file.modified}</span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => openFileDetails(file)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                              title="Inspect content & PII"
+                            >
+                              <Eye className="w-3.5 h-3.5 inline text-emerald-400" />
+                            </button>
+
+                            <button
+                              onClick={() => revealInExplorer(file.path)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                              title="Reveal in Windows Explorer"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5 inline" />
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    ))
+                  )}
+                </div>
+              </div>
 
-                    {/* Actions */}
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <button
-                        onClick={() => openFileDetails(file)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 transition cursor-pointer flex items-center gap-1.5"
-                      >
-                        <Eye className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Inspect</span>
-                      </button>
-
-                      <button
-                        onClick={() => revealInExplorer(file.path)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer flex items-center gap-1.5"
-                        title="Open file location in Windows Explorer"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Open Folder</span>
-                      </button>
-                    </div>
-
-                  </div>
-                ))
-              )}
             </div>
 
+          </main>
+        </div>
+      )}
+
+      {/* TAB 2: CLEAN & ORGANIZE */}
+      {activeTab === 'organize' && (
+        <div className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
+          <div className={`p-6 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm ${
+            isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
+          }`}>
+            <div>
+              <div className="flex items-center gap-2">
+                <Wand2 className="w-5 h-5 text-emerald-400" />
+                <h2 className="text-base font-bold">Smart Auto-Organization</h2>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                Kosha analyzes messy files across your drive and proposes clean filenames and target folders.
+              </p>
+            </div>
+
+            {proposals.length > 0 && (
+              <button
+                onClick={() => {
+                  setProposals([]);
+                  showToast('Organized files successfully!');
+                }}
+                className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs transition shadow-sm cursor-pointer flex items-center gap-2"
+              >
+                <Check className="w-4 h-4" />
+                <span>Apply All {proposals.length} Organizers</span>
+              </button>
+            )}
           </div>
-        )}
 
-        {/* TAB 2: SMART CLEAN & ORGANIZE */}
-        {activeTab === 'organize' && (
-          <div className="space-y-6">
-            
-            {/* Explanatory Banner */}
-            <div className={`p-6 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm ${
-              isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'
-            }`}>
-              <div>
-                <div className="flex items-center gap-2">
-                  <Wand2 className="w-5 h-5 text-emerald-400" />
-                  <h2 className="text-base font-bold">Smart Auto-Organization</h2>
-                </div>
-                <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                  Kosha reads the contents of messy files (like screenshots, unhelpful download names) and suggests clean, meaningful names and sorted folders.
-                </p>
-              </div>
-
-              {proposals.length > 0 && (
-                <button
-                  onClick={applyProposals}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs transition shadow-sm cursor-pointer flex items-center gap-2 self-start md:self-center"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>Apply All {proposals.length} Organizers</span>
-                </button>
-              )}
-            </div>
-
-            {/* Proposals List */}
-            <div className={`rounded-2xl border divide-y overflow-hidden shadow-sm ${
-              isDark ? 'bg-[#161922] border-slate-800/80 divide-slate-800/60' : 'bg-white border-slate-200 divide-slate-200'
-            }`}>
-              {proposals.length === 0 ? (
-                <div className="p-12 text-center text-slate-400 space-y-3">
-                  <Check className="w-10 h-10 mx-auto text-emerald-400" />
-                  <h3 className="font-bold text-sm text-slate-200">All Folders Clean & Organized!</h3>
-                  <p className="text-xs text-slate-400">No messy file names or unorganized clutter found.</p>
-                </div>
-              ) : (
-                proposals.map((item) => (
-                  <div key={item.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div className="space-y-1.5 flex-1">
-                      {/* Name Diff */}
-                      <div className="flex items-center gap-2 font-mono text-xs">
-                        <span className="text-rose-400 line-through">{item.oldName}</span>
-                        <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                        <span className="text-emerald-400 font-bold">{item.newName}</span>
-                      </div>
-
-                      {/* Route destination */}
-                      <div className="text-xs text-slate-400">
-                        <span>Target: </span>
-                        <strong className="text-slate-300">{item.folder}</strong>
-                      </div>
-
-                      {/* AI Reason */}
-                      <div className="text-xs text-slate-400 italic">
-                        <span>AI OCR Justification: </span>
-                        <span className="text-slate-300 not-italic">{item.reason}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3 self-end md:self-center">
-                      <span className="text-xs font-mono text-slate-400">{item.size}</span>
-                      <button
-                        onClick={() => {
-                          setProposals(prev => prev.filter(p => p.id !== item.id));
-                          showToast(`Organized ${item.newName}`);
-                        }}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 transition cursor-pointer"
-                      >
-                        Organize File
-                      </button>
-                    </div>
+          <div className={`rounded-2xl border divide-y overflow-hidden shadow-sm ${
+            isDark ? 'bg-[#161922] border-slate-800 divide-slate-800/60' : 'bg-white border-slate-200 divide-slate-200'
+          }`}>
+            {proposals.map(item => (
+              <div key={item.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1.5 flex-1">
+                  <div className="flex items-center gap-2 font-mono text-xs">
+                    <span className="text-rose-400 line-through">{item.oldName}</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400 font-bold">{item.newName}</span>
                   </div>
-                ))
-              )}
-            </div>
-
-          </div>
-        )}
-
-        {/* TAB 3: DISK STORAGE OPTIMIZER */}
-        {activeTab === 'storage' && (
-          <div className="space-y-6">
-            
-            {/* Storage Progress Card */}
-            <div className={`p-6 rounded-2xl border space-y-4 shadow-sm ${
-              isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'
-            }`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-base font-bold">Local Drive Capacity</h2>
-                  <p className="text-xs text-slate-400 mt-0.5">Physical Windows Partition: {driveStats.drive}</p>
+                  <div className="text-xs text-slate-400">
+                    <span>Target: </span>
+                    <strong className="text-slate-300">{item.folder}</strong>
+                  </div>
+                  <div className="text-xs text-slate-400 italic">
+                    <span>AI Reasoning: </span>
+                    <span className="text-slate-300 not-italic">{item.reason}</span>
+                  </div>
                 </div>
-                <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">
-                  {driveStats.usedPercent}% Used
-                </span>
-              </div>
 
-              {/* Clean Storage Bar */}
-              <div className="space-y-1.5">
-                <div className="h-3 w-full bg-slate-800 rounded-full overflow-hidden flex">
-                  <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${driveStats.usedPercent}%` }} />
-                </div>
-                <div className="flex justify-between text-xs text-slate-400 font-mono">
-                  <span>{driveStats.usedGB} GB Used</span>
-                  <span>{driveStats.freeGB} GB Available of {driveStats.totalGB} GB</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Storage Breakdown Tiles */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className={`p-4 rounded-xl border ${isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'}`}>
-                <div className="text-xs font-semibold text-slate-400">Large Videos & Captures</div>
-                <div className="text-xl font-bold text-slate-100 mt-1">18.4 GB</div>
-                <p className="text-[11px] text-slate-400 mt-1">Screen recordings & high-bitrate media</p>
-              </div>
-
-              <div className={`p-4 rounded-xl border ${isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'}`}>
-                <div className="text-xs font-semibold text-slate-400">Documents & Academic Notes</div>
-                <div className="text-xl font-bold text-slate-100 mt-1">3.1 GB</div>
-                <p className="text-[11px] text-slate-400 mt-1">820 searchable PDFs & text notes</p>
-              </div>
-
-              <div className={`p-4 rounded-xl border ${isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'}`}>
-                <div className="text-xs font-semibold text-pink-400 font-bold">Stale Caches & Temp Files</div>
-                <div className="text-xl font-bold text-pink-400 mt-1">8.2 GB</div>
-                <div className="mt-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-mono text-slate-400">{item.size}</span>
                   <button
-                    onClick={cleanCache}
-                    className="w-full py-1.5 rounded-lg text-xs font-bold bg-pink-500/15 hover:bg-pink-500/25 text-pink-400 border border-pink-500/30 transition cursor-pointer flex items-center justify-center gap-1.5"
+                    onClick={() => {
+                      setProposals(prev => prev.filter(p => p.id !== item.id));
+                      showToast(`Organized ${item.newName}`);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 transition cursor-pointer"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Clean 8.2 GB Cache</span>
+                    Organize File
                   </button>
                 </div>
               </div>
-            </div>
-
+            ))}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* TAB 4: PRIVACY SHIELD & PRESIDIO */}
-        {activeTab === 'privacy' && (
-          <div className="space-y-6">
-            
-            {/* Privacy Explanation Banner */}
-            <div className={`p-6 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm ${
-              isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'
-            }`}>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                  <h2 className="text-base font-bold">Air-Gapped Privacy Engine</h2>
-                </div>
-                <p className="text-xs text-slate-400 max-w-xl">
-                  Unlike cloud AI tools, Kosha analyzes your files completely on your device. Any names, phone numbers, or passwords are automatically masked before any external queries.
-                </p>
+      {/* TAB 3: DRIVE STORAGE */}
+      {activeTab === 'storage' && (
+        <div className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
+          <div className={`p-6 rounded-2xl border space-y-4 shadow-sm ${
+            isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
+          }`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold">Local Disk Partition</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Physical Windows Drive: {driveStats.drive}</p>
               </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-400">Sample:</span>
-                <div className="flex rounded-lg bg-slate-800 p-1 text-xs">
-                  {['finance', 'academic', 'secrets'].map(s => (
-                    <button
-                      key={s}
-                      onClick={() => handlePrivacySwitch(s)}
-                      className={`px-3 py-1 rounded capitalize font-medium transition cursor-pointer ${
-                        privacySample === s ? 'bg-emerald-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Side-by-Side Comparison */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              
-              {/* Raw Local */}
-              <div className={`p-5 rounded-2xl border space-y-3 ${
-                isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'
-              }`}>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-rose-400 flex items-center gap-1.5">
-                    <span>1. Your Local File (Unredacted)</span>
-                  </span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 font-bold">
-                    Contains Sensitive PII
-                  </span>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-950 font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed border border-rose-500/20 min-h-[160px]">
-                  {redactedData.raw}
-                </div>
-              </div>
-
-              {/* Clean Payload */}
-              <div className={`p-5 rounded-2xl border space-y-3 ${
-                isDark ? 'bg-[#161922] border-slate-800/80' : 'bg-white border-slate-200'
-              }`}>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
-                    <span>2. Masked Air-Gap Payload</span>
-                  </span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold">
-                    0 Leaks (Air-Gapped)
-                  </span>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-950 font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed border border-emerald-500/20 min-h-[160px]">
-                  {redactedData.clean}
-                </div>
-              </div>
-
-            </div>
-
-            {/* Guarantee Badge */}
-            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between text-xs text-emerald-400">
-              <span className="flex items-center gap-2">
-                <Check className="w-4 h-4" />
-                <span>Zero Bytes Leaked Guarantee — Runs 100% on local CPU</span>
+              <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">
+                {driveStats.usedPercent}% Used
               </span>
-              <span className="font-mono font-bold">Presidio NER Engine</span>
             </div>
 
+            <div className="space-y-1.5">
+              <div className="h-3 w-full bg-slate-800 rounded-full overflow-hidden flex">
+                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${driveStats.usedPercent}%` }} />
+              </div>
+              <div className="flex justify-between text-xs text-slate-400 font-mono">
+                <span>{driveStats.usedGB} GB Used</span>
+                <span>{driveStats.freeGB} GB Available of {driveStats.totalGB} GB</span>
+              </div>
+            </div>
           </div>
-        )}
+        </div>
+      )}
 
-      </main>
+      {/* TAB 4: PRIVACY GUARD */}
+      {activeTab === 'privacy' && (
+        <div className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
+          <div className={`p-6 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm ${
+            isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
+          }`}>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                <h2 className="text-base font-bold">Air-Gapped Privacy Engine</h2>
+              </div>
+              <p className="text-xs text-slate-400 max-w-xl">
+                Kosha analyzes files strictly on your local computer. PII is redacted locally.
+              </p>
+            </div>
 
-      {/* =========================================================
-          INSPECT FILE DRAWER MODAL
-         ========================================================= */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400">Sample:</span>
+              <div className="flex rounded-lg bg-slate-800 p-1 text-xs">
+                {['finance', 'academic', 'secrets'].map(s => (
+                  <button
+                    key={s}
+                    onClick={() => handlePrivacySwitch(s)}
+                    className={`px-3 py-1 rounded capitalize font-medium transition cursor-pointer ${
+                      privacySample === s ? 'bg-emerald-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div className={`p-5 rounded-2xl border space-y-3 ${isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'}`}>
+              <span className="text-xs font-bold text-rose-400 block">1. Local Raw File</span>
+              <div className="p-4 rounded-xl bg-slate-950 font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed border border-rose-500/20 min-h-[160px]">
+                {redactedData.raw}
+              </div>
+            </div>
+
+            <div className={`p-5 rounded-2xl border space-y-3 ${isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'}`}>
+              <span className="text-xs font-bold text-emerald-400 block">2. Air-Gapped Masked Payload</span>
+              <div className="p-4 rounded-xl bg-slate-950 font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed border border-emerald-500/20 min-h-[160px]">
+                {redactedData.clean}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INSPECT FILE MODAL */}
       {inspectFile && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className={`w-full max-w-xl rounded-2xl border shadow-xl overflow-hidden ${
@@ -820,14 +849,14 @@ export default function App() {
               </div>
 
               <div>
-                <span className="text-xs text-slate-400 font-semibold block mb-1.5">File Content / Extracted Snippet:</span>
-                <div className="p-3.5 rounded-xl bg-slate-950 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-52 overflow-y-auto border border-slate-800">
+                <span className="text-xs text-slate-400 font-semibold block mb-1.5">File Content Preview:</span>
+                <div className="p-3.5 rounded-xl bg-slate-950 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-56 overflow-y-auto border border-slate-800">
                   {fileContent || inspectFile.snippet}
                 </div>
               </div>
 
               <div className="pt-2 flex items-center justify-between">
-                <span className="text-xs text-emerald-400">Air-Gapped & Local</span>
+                <span className="text-xs text-emerald-400">100% On-Device Air-Gapped</span>
                 <button
                   onClick={() => {
                     revealInExplorer(inspectFile.path);
@@ -843,9 +872,7 @@ export default function App() {
         </div>
       )}
 
-      {/* =========================================================
-          SIMPLE TOAST
-         ========================================================= */}
+      {/* TOAST */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50">
           <div className="px-4 py-2.5 rounded-xl bg-slate-900 text-slate-100 border border-emerald-500/50 shadow-lg text-xs font-medium flex items-center gap-2">
