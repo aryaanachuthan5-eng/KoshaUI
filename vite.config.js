@@ -93,6 +93,7 @@ function koshaApiPlugin() {
 export default defineConfig({
   plugins: [react(), koshaApiPlugin()],
   server: {
+    host: true,
     port: 3000,
     proxy: {
       '/api': {
