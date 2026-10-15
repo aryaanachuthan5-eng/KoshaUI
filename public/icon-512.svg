@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0c0d12"/>
+  <rect x="32" y="32" width="448" height="448" rx="80" fill="#12151f"/>
+  <!-- Folder shape -->
+  <path d="M80 196 Q80 160 116 160 L228 160 L248 136 L396 136 Q432 136 432 172 L432 352 Q432 388 396 388 L116 388 Q80 388 80 352 Z" fill="#1e2435"/>
+  <!-- K letter -->
+  <text x="256" y="316" text-anchor="middle" font-family="Arial Black, sans-serif" font-size="180" font-weight="900" fill="#10b981">K</text>
+  <!-- Green accent dot -->
+  <circle cx="408" cy="120" r="32" fill="#10b981"/>
+</svg>
