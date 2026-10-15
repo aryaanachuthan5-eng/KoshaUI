@@ -11,25 +11,27 @@ import {
   Moon,
   Check,
   FileText,
+  FileImage,
   Video,
   Archive,
   Key,
   Terminal,
   ArrowRight,
   ArrowUp,
-  Trash2,
   RefreshCw,
   Eye,
   X,
-  Lock,
   ChevronRight,
   Home,
   Laptop,
   FolderTree,
   FileCode,
   Smartphone,
-  UploadCloud,
-  FolderPlus
+  Menu,
+  FolderPlus,
+  Wifi,
+  Copy,
+  Globe
 } from 'lucide-react';
 import {
   isDirectoryPickerSupported,
@@ -43,8 +45,11 @@ export default function App() {
   const [isDark, setIsDark] = useState(true);
   const [activeTab, setActiveTab] = useState('manager'); // 'manager' | 'organize' | 'storage' | 'privacy'
 
-  // Storage Source Mode: 'server' (host C:\ drive) or 'client' (this device's browser picker)
+  // Storage Source Mode: 'server' (host C:\ drive) or 'client' (phone/client browser picker)
   const [sourceMode, setSourceMode] = useState('server');
+
+  // Mobile sidebar drawer state
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // File Manager State
   const [currentPath, setCurrentPath] = useState('C:\\Users\\Aryaan\\Desktop');
@@ -57,7 +62,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
 
-  // Client-Device Handle State (for browsing current device)
+  // Client-Device Handle State (for browsing this phone/device)
   const [clientRootHandle, setClientRootHandle] = useState(null);
   const [clientDirStack, setClientDirStack] = useState([]); // [{ name, handle }]
   const fileInputRef = useRef(null);
@@ -73,10 +78,22 @@ export default function App() {
     usedGB: 277.7,
     freeGB: 198.0,
     usedPercent: 58,
-    userHome: 'C:\\Users\\Aryaan'
+    userHome: 'C:\\Users\\Aryaan',
+    localIP: '172.16.10.153'
   });
 
-  // Clutter / Organize Proposals
+  // Copy-to-clipboard helper
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('Copied to clipboard!');
+    }).catch(() => {
+      showToast('Could not copy — try manually', 'warning');
+    });
+  };
+
+  const hostURL = `http://${driveStats.localIP}:3000`;
+
+  // Clutter Proposals
   const [proposals, setProposals] = useState([
     {
       id: 1,
@@ -147,14 +164,14 @@ export default function App() {
         setDriveStats(data);
       }
     } catch {
-      // Backend not available (e.g. opened on phone or remote machine)
-      setSourceMode('client');
+      // Offline – keep defaults
     }
   };
 
   // Server Drive Navigation
   const navigateServerTo = async (targetPath) => {
     setIsLoading(true);
+    setIsMobileSidebarOpen(false);
     try {
       const url = targetPath
         ? `/api/drive/browse?path=${encodeURIComponent(targetPath)}&showHidden=${showHidden}`
@@ -173,12 +190,10 @@ export default function App() {
         setIsEditingPath(false);
         setSourceMode('server');
       } else {
-        showToast(data.error || 'Could not open folder on server drive', 'warning');
+        showToast(data.error || 'Could not open folder', 'warning');
       }
     } catch {
-      // If backend fails, offer client device browsing
-      setSourceMode('client');
-      showToast('Server drive unreachable. Switched to local device mode.', 'info');
+      showToast('Could not reach backend daemon', 'warning');
     } finally {
       setIsLoading(false);
     }
@@ -186,6 +201,7 @@ export default function App() {
 
   // Client Device: Open Folder using File System Access API
   const handleOpenClientFolder = async () => {
+    setIsMobileSidebarOpen(false);
     if (isDirectoryPickerSupported()) {
       try {
         const rootHandle = await pickClientDirectory();
@@ -209,7 +225,8 @@ export default function App() {
         setIsLoading(false);
       }
     } else {
-      // Mobile or browsers without showDirectoryPicker: Trigger HTML folder input
+      // On iOS / Android, explain why native OS picker opens
+      showToast('Opening phone file selector (iOS/Android security requirement)', 'info');
       if (fileInputRef.current) {
         fileInputRef.current.click();
       }
@@ -284,7 +301,7 @@ export default function App() {
     setCurrentPath(folderName);
     setBreadcrumbs([{ name: folderName, path: folderName }]);
     setParentPath(null);
-    showToast(`Loaded ${fls.length} files from your device!`);
+    showToast(`Loaded ${fls.length} files from phone storage!`);
   };
 
   // Initial load
@@ -318,7 +335,6 @@ export default function App() {
   const openFileDetails = async (file) => {
     setInspectFile(file);
 
-    // If file is from client handle
     if (file.fileObj) {
       try {
         const text = await file.fileObj.text();
@@ -331,7 +347,6 @@ export default function App() {
       }
     }
 
-    // Otherwise server file
     try {
       const res = await fetch(`/api/drive/file?path=${encodeURIComponent(file.path)}`);
       const data = await res.json();
@@ -384,24 +399,35 @@ export default function App() {
       <header className={`h-14 border-b px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md ${
         isDark ? 'bg-[#12151f]/95 border-slate-800' : 'bg-white/95 border-slate-200'
       }`}>
-        {/* Brand */}
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-base shadow-sm">
-            K
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="font-extrabold text-base tracking-tight">Kosha</span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
-              {sourceMode === 'server' ? 'HOST C:\\ DRIVE' : 'THIS DEVICE'}
-            </span>
+        <div className="flex items-center gap-2.5">
+          {/* Mobile Menu Hamburger */}
+          <button
+            onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+            className="md:hidden p-1.5 rounded-lg bg-slate-800/80 text-slate-300 hover:text-white"
+            title="Toggle Quick Shortcuts"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+
+          {/* Brand */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-slate-950 text-base shadow-sm">
+              K
+            </div>
+            <div>
+              <span className="font-extrabold text-base tracking-tight">Kosha</span>
+              <span className="hidden sm:inline-block ml-2 text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
+                {sourceMode === 'server' ? 'LOCAL DRIVE LIVE' : 'PHONE STORAGE'}
+              </span>
+            </div>
           </div>
         </div>
 
         {/* Navigation Tabs */}
-        <nav className="flex items-center gap-1 p-1 rounded-xl bg-slate-900/50 border border-slate-800">
+        <nav className="flex items-center gap-1 p-1 rounded-xl bg-slate-900/50 border border-slate-800 text-xs">
           <button
             onClick={() => setActiveTab('manager')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'manager'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
@@ -413,7 +439,7 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('organize')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'organize'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
@@ -425,7 +451,7 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('storage')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'storage'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
@@ -437,7 +463,7 @@ export default function App() {
 
           <button
             onClick={() => setActiveTab('privacy')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'privacy'
                 ? 'bg-emerald-500 text-slate-950 shadow-sm font-bold'
                 : 'text-slate-400 hover:text-slate-200'
@@ -448,19 +474,8 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Right Info & Open Device Folder Action */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Button to open folder on THIS device */}
-          <button
-            onClick={handleOpenClientFolder}
-            className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
-            title="Browse any folder on this phone or PC"
-          >
-            <FolderPlus className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden md:inline">Open Folder on This Device</span>
-            <span className="md:hidden">Open</span>
-          </button>
-
+        {/* Right Info & Dark/Light Toggle */}
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setIsDark(!isDark)}
             className={`w-8 h-8 rounded-lg flex items-center justify-center transition border cursor-pointer ${
@@ -477,94 +492,119 @@ export default function App() {
           MAIN WORKSPACE (FILE MANAGER LAYOUT)
          ========================================================= */}
       {activeTab === 'manager' && (
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden relative">
           
-          {/* LEFT QUICK ACCESS SIDEBAR */}
-          <aside className={`w-52 sm:w-60 border-r flex flex-col justify-between p-3.5 transition-colors flex-shrink-0 ${
-            isDark ? 'bg-[#12151f]/80 border-slate-800' : 'bg-white border-slate-200'
-          }`}>
+          {/* QUICK ACCESS SIDEBAR (Responsive drawer on mobile, sticky on desktop) */}
+          <aside className={`
+            ${isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+            fixed md:static inset-y-0 left-0 z-40 w-64 border-r flex flex-col justify-between p-4 transition-transform duration-200 ease-in-out flex-shrink-0
+            ${isDark ? 'bg-[#12151f] border-slate-800' : 'bg-white border-slate-200'}
+          `}>
             <div className="space-y-4">
               
-              {/* Device Mode Switcher */}
-              <div className="space-y-1.5">
-                <div className="px-2 text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold">
-                  Device Storage Source
-                </div>
-
+              <div className="flex items-center justify-between px-2">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-slate-500 font-bold">
+                  Quick Shortcuts
+                </span>
                 <button
-                  onClick={handleOpenClientFolder}
+                  onClick={() => setIsMobileSidebarOpen(false)}
+                  className="md:hidden text-slate-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Host Drive Quick Locations */}
+              <div className="space-y-1 text-xs font-medium">
+                <button
+                  onClick={() => navigateServerTo('C:\\')}
                   className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    sourceMode === 'client'
-                      ? 'bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/40 shadow-sm'
-                      : 'bg-slate-800/40 text-slate-300 hover:bg-slate-800/70'
+                    currentPath.toLowerCase() === 'c:\\'
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
                   }`}
                 >
-                  <Smartphone className="w-4 h-4 text-emerald-400" />
-                  <div>
-                    <div className="font-semibold text-xs">This Device</div>
-                    <div className="text-[10px] text-slate-400">Pick any local folder</div>
-                  </div>
+                  <HardDrive className="w-4 h-4 text-emerald-400" />
+                  <span>Local Disk (C:\)</span>
+                </button>
+
+                <button
+                  onClick={() => navigateServerTo(driveStats.userHome)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase() === driveStats.userHome.toLowerCase()
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <Home className="w-4 h-4 text-cyan-400" />
+                  <span>User Home</span>
                 </button>
 
                 <button
                   onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop')}
                   className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
-                    sourceMode === 'server'
-                      ? 'bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/40 shadow-sm'
+                    currentPath.toLowerCase().includes('desktop')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
                       : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
                   }`}
                 >
-                  <HardDrive className="w-4 h-4 text-cyan-400" />
-                  <div>
-                    <div className="font-semibold text-xs">Host PC Drive</div>
-                    <div className="text-[10px] text-slate-400">C:\ Windows Drive</div>
-                  </div>
+                  <Laptop className="w-4 h-4 text-purple-400" />
+                  <span>Desktop</span>
+                </button>
+
+                <button
+                  onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Downloads')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('downloads')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <FolderOpen className="w-4 h-4 text-amber-400" />
+                  <span>Downloads</span>
+                </button>
+
+                <button
+                  onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Documents')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('documents')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-pink-400" />
+                  <span>Documents</span>
+                </button>
+
+                <button
+                  onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop\\DBCE Hackathon')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition cursor-pointer text-left ${
+                    currentPath.toLowerCase().includes('dbce hackathon')
+                      ? 'bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/40'
+                  }`}
+                >
+                  <FileCode className="w-4 h-4 text-emerald-400" />
+                  <span>Kosha Project</span>
                 </button>
               </div>
 
-              {/* Host Drive Quick Locations (when in server mode) */}
-              {sourceMode === 'server' && (
-                <div className="space-y-1 text-xs font-medium pt-2 border-t border-slate-800/60">
-                  <div className="px-2 text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold mb-1">
-                    Host Shortcuts
-                  </div>
-
-                  <button
-                    onClick={() => navigateServerTo('C:\\')}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
-                  >
-                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>C:\ Root</span>
-                  </button>
-
-                  <button
-                    onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop')}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
-                  >
-                    <Laptop className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Desktop</span>
-                  </button>
-
-                  <button
-                    onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Downloads')}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Downloads</span>
-                  </button>
-
-                  <button
-                    onClick={() => navigateServerTo('C:\\Users\\Aryaan\\Desktop\\DBCE Hackathon')}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800/40 cursor-pointer text-left"
-                  >
-                    <FileCode className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Kosha Project</span>
-                  </button>
-                </div>
-              )}
-
-              {/* Toggles */}
+              {/* Browse Phone/Client Storage Button */}
               <div className="pt-3 border-t border-slate-800/80">
+                <button
+                  onClick={handleOpenClientFolder}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 border border-slate-700/60 text-xs font-semibold cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-emerald-400" />
+                    <span>Upload Phone Folder</span>
+                  </div>
+                  <FolderPlus className="w-3.5 h-3.5 text-slate-400" />
+                </button>
+              </div>
+
+              {/* Hidden files toggle */}
+              <div className="pt-2">
                 <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none px-1">
                   <input
                     type="checkbox"
@@ -572,23 +612,51 @@ export default function App() {
                     onChange={(e) => setShowHidden(e.target.checked)}
                     className="w-3.5 h-3.5 rounded text-emerald-500 accent-emerald-500 cursor-pointer"
                   />
-                  <span>Show hidden files</span>
+                  <span>Show hidden dotfiles</span>
                 </label>
               </div>
 
             </div>
 
-            <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] font-mono text-slate-400">
-              <span className="block text-slate-500">Security Mode:</span>
-              <span className="text-emerald-400 font-bold">100% On-Device Private</span>
+            {/* Network Connection Info */}
+            <div className={`p-2.5 rounded-xl border text-[11px] font-mono space-y-1.5 ${
+              isDark ? 'bg-slate-900/60 border-slate-800' : 'bg-slate-100 border-slate-200'
+            }`}>
+              <div className="flex items-center gap-1.5 text-slate-500">
+                <Wifi className="w-3 h-3" />
+                <span>LAN Access</span>
+              </div>
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-emerald-400 font-bold truncate">
+                  {driveStats.localIP}:3000
+                </span>
+                <button
+                  onClick={() => copyToClipboard(`http://${driveStats.localIP}:3000`)}
+                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition cursor-pointer flex-shrink-0"
+                  title="Copy network URL"
+                >
+                  <Copy className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="text-slate-600 text-[10px] leading-tight">
+                Open on any device on same Wi-Fi
+              </div>
             </div>
           </aside>
 
+          {/* Backdrop on mobile when sidebar is open */}
+          {isMobileSidebarOpen && (
+            <div
+              onClick={() => setIsMobileSidebarOpen(false)}
+              className="md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm"
+            />
+          )}
+
           {/* MAIN BROWSER AREA */}
-          <main className="flex-1 flex flex-col overflow-hidden">
+          <main className="flex-1 flex flex-col overflow-hidden w-full">
             
             {/* ADDRESS BAR & CONTROLS */}
-            <div className={`p-3.5 border-b flex items-center justify-between gap-3 ${
+            <div className={`p-3 border-b flex items-center justify-between gap-2.5 ${
               isDark ? 'bg-[#151926]/90 border-slate-800' : 'bg-white border-slate-200'
             }`}>
               {/* Back / Up Button */}
@@ -601,7 +669,7 @@ export default function App() {
                   }
                 }}
                 disabled={sourceMode === 'client' ? clientDirStack.length <= 1 : !parentPath}
-                className={`p-2 rounded-xl border flex items-center justify-center transition cursor-pointer ${
+                className={`p-2 rounded-xl border flex items-center justify-center transition cursor-pointer flex-shrink-0 ${
                   (sourceMode === 'client' ? clientDirStack.length > 1 : parentPath)
                     ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
                     : 'bg-slate-900/40 border-slate-800/40 text-slate-600 cursor-not-allowed'
@@ -611,8 +679,8 @@ export default function App() {
                 <ArrowUp className="w-4 h-4" />
               </button>
 
-              {/* Breadcrumbs or Path */}
-              <div className="flex-1 relative">
+              {/* Breadcrumbs Trail */}
+              <div className="flex-1 min-w-0">
                 {isEditingPath && sourceMode === 'server' ? (
                   <form
                     onSubmit={(e) => {
@@ -640,7 +708,7 @@ export default function App() {
                         setIsEditingPath(true);
                       }
                     }}
-                    className={`px-3 py-1.5 rounded-xl border flex items-center gap-1 overflow-x-auto text-xs font-mono ${
+                    className={`px-3 py-1.5 rounded-xl border flex items-center gap-1 overflow-x-auto text-xs font-mono scrollbar-none ${
                       isDark ? 'bg-slate-900/60 border-slate-800' : 'bg-slate-100 border-slate-300'
                     } ${sourceMode === 'server' ? 'cursor-text hover:border-slate-700' : 'cursor-default'}`}
                   >
@@ -668,21 +736,21 @@ export default function App() {
                 )}
               </div>
 
-              {/* In-Folder Filter */}
-              <div className="w-48 sm:w-56 relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400 pointer-events-none" />
+              {/* Filter */}
+              <div className="w-32 sm:w-48 relative flex-shrink-0">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter folder..."
-                  className={`w-full pl-8 pr-3 py-1.5 rounded-xl border text-xs font-mono focus:outline-none focus:border-emerald-500 ${
+                  placeholder="Filter..."
+                  className={`w-full pl-7 pr-2.5 py-1.5 rounded-xl border text-xs font-mono focus:outline-none focus:border-emerald-500 ${
                     isDark ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-slate-100 border-slate-300 text-slate-800'
                   }`}
                 />
               </div>
 
-              {/* Refresh / Pick Button */}
+              {/* Refresh */}
               <button
                 onClick={() => {
                   if (sourceMode === 'client') {
@@ -691,25 +759,25 @@ export default function App() {
                     navigateServerTo(currentPath);
                   }
                 }}
-                className="p-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
-                title={sourceMode === 'client' ? 'Pick a new folder' : 'Refresh folder'}
+                className="p-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 transition cursor-pointer flex-shrink-0"
+                title="Refresh folder"
               >
                 <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
               </button>
             </div>
 
             {/* CONTENTS AREA */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
               
               {/* SUBFOLDERS */}
               {filteredFolders.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
                     <span className="font-semibold uppercase tracking-wider text-[11px]">Folders ({filteredFolders.length})</span>
-                    <span>Click folder to open</span>
+                    <span className="text-[11px] text-emerald-400">Tap folder to open</span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
                     {filteredFolders.map(folder => (
                       <div
                         key={folder.path}
@@ -720,7 +788,7 @@ export default function App() {
                             navigateServerTo(folder.path);
                           }
                         }}
-                        className={`p-3 rounded-xl border flex items-center gap-3 transition cursor-pointer group ${
+                        className={`p-3 rounded-xl border flex items-center gap-2.5 transition cursor-pointer group select-none active:scale-98 ${
                           isDark
                             ? 'bg-[#151926] border-slate-800/80 hover:border-emerald-500/50 hover:bg-slate-800/40'
                             : 'bg-white border-slate-200 hover:border-emerald-500/50 hover:bg-slate-50'
@@ -743,38 +811,33 @@ export default function App() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs font-mono text-slate-400 px-1">
                   <span className="font-semibold uppercase tracking-wider text-[11px]">Files ({filteredFiles.length})</span>
-                  <span>{currentPath}</span>
+                  <span className="truncate max-w-[200px] text-[11px]">{currentPath}</span>
                 </div>
 
                 <div className={`rounded-2xl border divide-y overflow-hidden shadow-sm ${
                   isDark ? 'bg-[#151926] border-slate-800/80 divide-slate-800/60' : 'bg-white border-slate-200 divide-slate-200'
                 }`}>
                   {filteredFiles.length === 0 ? (
-                    <div className="p-10 text-center text-slate-400 space-y-3">
-                      <FolderOpen className="w-10 h-10 mx-auto opacity-30 text-emerald-400" />
-                      <p className="text-xs font-medium">No files found in this folder</p>
-                      <button
-                        onClick={handleOpenClientFolder}
-                        className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold text-xs transition cursor-pointer inline-flex items-center gap-1.5"
-                      >
-                        <FolderPlus className="w-4 h-4" />
-                        <span>Select Another Folder on This Device</span>
-                      </button>
+                    <div className="p-8 text-center text-slate-500 space-y-1">
+                      <FolderOpen className="w-8 h-8 mx-auto opacity-30" />
+                      <p className="text-xs font-medium">No files in this folder</p>
                     </div>
                   ) : (
                     filteredFiles.map(file => (
                       <div
                         key={file.path}
-                        className="p-3.5 px-4 flex items-center justify-between gap-4 hover:bg-slate-800/20 transition group"
+                        className="p-3 px-3.5 flex items-center justify-between gap-3 hover:bg-slate-800/20 transition group"
                       >
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <div className="w-8 h-8 rounded-lg bg-slate-800/80 flex items-center justify-center text-slate-300 flex-shrink-0">
                             {file.type === 'pdf' && <FileText className="w-4 h-4 text-rose-400" />}
-                            {file.type === 'image' && <FileText className="w-4 h-4 text-pink-400" />}
+                            {file.type === 'image' && <FileImage className="w-4 h-4 text-pink-400" />}
                             {file.type === 'video' && <Video className="w-4 h-4 text-purple-400" />}
+                            {file.type === 'archive' && <Archive className="w-4 h-4 text-amber-500" />}
                             {file.type === 'script' && <Terminal className="w-4 h-4 text-cyan-400" />}
                             {file.type === 'secret' && <Key className="w-4 h-4 text-amber-400" />}
-                            {!file.type && <FileText className="w-4 h-4 text-emerald-400" />}
+                            {file.type === 'text' && <FileText className="w-4 h-4 text-slate-400" />}
+                            {!['pdf','image','video','archive','script','secret','text'].includes(file.type) && <FileText className="w-4 h-4 text-emerald-400" />}
                           </div>
 
                           <div className="min-w-0 flex-1">
@@ -783,7 +846,7 @@ export default function App() {
                                 {file.name}
                               </span>
                               {file.privacy && file.privacy.includes('PII') && (
-                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-pink-500/15 text-pink-400 font-mono">
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-pink-500/15 text-pink-400 font-mono flex-shrink-0">
                                   {file.privacy}
                                 </span>
                               )}
@@ -795,14 +858,13 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3 text-xs font-mono text-slate-400 flex-shrink-0">
-                          <span className="w-16 text-right font-semibold">{file.size}</span>
-                          <span className="hidden sm:inline w-28 text-right text-[11px] text-slate-500">{file.modified}</span>
+                        <div className="flex items-center gap-2 text-xs font-mono text-slate-400 flex-shrink-0">
+                          <span className="w-14 text-right font-semibold text-[11px]">{file.size}</span>
 
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1">
                             <button
                               onClick={() => openFileDetails(file)}
-                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
                               title="Inspect content & PII"
                             >
                               <Eye className="w-3.5 h-3.5 inline text-emerald-400" />
@@ -811,7 +873,7 @@ export default function App() {
                             {sourceMode === 'server' && (
                               <button
                                 onClick={() => revealInExplorer(file.path)}
-                                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                                className="hidden sm:inline-block px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
                                 title="Reveal in Windows Explorer"
                               >
                                 <ExternalLink className="w-3.5 h-3.5 inline" />
@@ -833,7 +895,7 @@ export default function App() {
 
       {/* TAB 2: CLEAN & ORGANIZE */}
       {activeTab === 'organize' && (
-        <div className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
+        <div className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 space-y-6">
           <div className={`p-6 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm ${
             isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
           }`}>
@@ -902,36 +964,111 @@ export default function App() {
 
       {/* TAB 3: DRIVE STORAGE */}
       {activeTab === 'storage' && (
-        <div className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
+        <div className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 space-y-5">
+
+          {/* Drive Usage Card */}
           <div className={`p-6 rounded-2xl border space-y-4 shadow-sm ${
             isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
           }`}>
             <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-base font-bold">Local Disk Partition</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Physical Windows Drive: {driveStats.drive}</p>
+              <div className="flex items-center gap-2">
+                <HardDrive className="w-5 h-5 text-emerald-400" />
+                <div>
+                  <h2 className="text-base font-bold">Local Disk {driveStats.drive}</h2>
+                  <p className="text-xs text-slate-400 mt-0.5">Host machine storage</p>
+                </div>
               </div>
-              <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">
+              <span className={`text-xs font-mono px-2.5 py-1 rounded-full font-bold ${
+                driveStats.usedPercent > 85
+                  ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                  : driveStats.usedPercent > 65
+                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              }`}>
                 {driveStats.usedPercent}% Used
               </span>
             </div>
 
             <div className="space-y-1.5">
-              <div className="h-3 w-full bg-slate-800 rounded-full overflow-hidden flex">
-                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${driveStats.usedPercent}%` }} />
+              <div className="h-3 w-full bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-700 ${
+                    driveStats.usedPercent > 85 ? 'bg-rose-500' : driveStats.usedPercent > 65 ? 'bg-amber-500' : 'bg-emerald-500'
+                  }`}
+                  style={{ width: `${driveStats.usedPercent}%` }}
+                />
               </div>
               <div className="flex justify-between text-xs text-slate-400 font-mono">
                 <span>{driveStats.usedGB} GB Used</span>
-                <span>{driveStats.freeGB} GB Available of {driveStats.totalGB} GB</span>
+                <span>{driveStats.freeGB} GB Free of {driveStats.totalGB} GB Total</span>
               </div>
             </div>
+
+            <div className="grid grid-cols-3 gap-3 pt-2">
+              {[
+                { label: 'Total', value: `${driveStats.totalGB} GB`, color: 'text-slate-300' },
+                { label: 'Used', value: `${driveStats.usedGB} GB`, color: 'text-rose-400' },
+                { label: 'Free', value: `${driveStats.freeGB} GB`, color: 'text-emerald-400' },
+              ].map(stat => (
+                <div key={stat.label} className={`p-3 rounded-xl text-center ${
+                  isDark ? 'bg-slate-900/60 border border-slate-800' : 'bg-slate-50 border border-slate-200'
+                }`}>
+                  <div className={`text-base font-bold font-mono ${stat.color}`}>{stat.value}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">{stat.label}</div>
+                </div>
+              ))}
+            </div>
           </div>
+
+          {/* Network Access Card */}
+          <div className={`p-6 rounded-2xl border space-y-4 shadow-sm ${
+            isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
+          }`}>
+            <div className="flex items-center gap-2">
+              <Globe className="w-5 h-5 text-cyan-400" />
+              <div>
+                <h2 className="text-base font-bold">Access from Another Device</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Open Kosha on any device connected to the same Wi-Fi</p>
+              </div>
+            </div>
+
+            <div className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+              isDark ? 'bg-slate-900/60 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'
+            }`}>
+              <div className="space-y-0.5">
+                <div className="text-xs text-slate-400 font-mono">Network URL:</div>
+                <div className="text-emerald-400 font-bold font-mono text-sm">
+                  http://{driveStats.localIP}:3000
+                </div>
+              </div>
+              <button
+                onClick={() => copyToClipboard(`http://${driveStats.localIP}:3000`)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-xs font-bold transition cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                Copy Link
+              </button>
+            </div>
+
+            <div className={`p-3.5 rounded-xl text-xs space-y-1.5 ${
+              isDark ? 'bg-slate-900/40 border border-slate-800' : 'bg-slate-50 border border-slate-200'
+            }`}>
+              <p className="text-slate-400 font-semibold">How to connect from phone:</p>
+              <ol className="text-slate-500 space-y-1 list-decimal list-inside">
+                <li>Make sure your phone is on the <strong className="text-slate-300">same Wi-Fi</strong> network</li>
+                <li>Open your phone browser and go to: <code className="text-emerald-400">http://{driveStats.localIP}:3000</code></li>
+                <li>You'll see Kosha with <strong className="text-slate-300">full access</strong> to this machine's files</li>
+              </ol>
+              <p className="text-slate-600 italic text-[11px]">Note: Phone browsers cannot access the phone's own file system directly due to OS security restrictions.</p>
+            </div>
+          </div>
+
         </div>
       )}
 
       {/* TAB 4: PRIVACY GUARD */}
       {activeTab === 'privacy' && (
-        <div className="flex-1 max-w-5xl w-full mx-auto p-6 space-y-6">
+        <div className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 space-y-6">
           <div className={`p-6 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm ${
             isDark ? 'bg-[#161922] border-slate-800' : 'bg-white border-slate-200'
           }`}>

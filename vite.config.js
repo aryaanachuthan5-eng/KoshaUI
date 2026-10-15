@@ -6,6 +6,7 @@ import {
   getFilePreview,
   openInExplorer,
   redactLocalText,
+  getLocalNetworkIP,
   DEFAULT_LOCATIONS
 } from './apiHandler.js';
 

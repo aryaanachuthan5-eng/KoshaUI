@@ -5,6 +5,19 @@ import { exec } from 'child_process';
 
 export const USER_HOMEDIR = os.homedir();
 
+// Get local network IP (not loopback)
+export function getLocalNetworkIP() {
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
 export const DEFAULT_LOCATIONS = {
   workspace: process.cwd(),
   desktop: path.join(USER_HOMEDIR, 'Desktop'),
@@ -101,6 +114,7 @@ export function getDriveInfo() {
     freeGB: parseFloat((freeBytes / (1024 ** 3)).toFixed(1)),
     usedPercent: Math.round((usedBytes / totalBytes) * 100),
     userHome: USER_HOMEDIR,
+    localIP: getLocalNetworkIP(),
     defaultLocations: DEFAULT_LOCATIONS
   };
 }
